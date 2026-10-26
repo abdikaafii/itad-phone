@@ -74,6 +74,12 @@ def render_txt(rep):
                      d.get("storage_gb") or "?")),
                  ("Battery", battery_text(d))):
         L.append("%-14s: %s" % (k, v or "-"))
+    sec = None
+    for sname, lab, val in d.get("details") or []:
+        if sname != sec:
+            L += ["", "DEVICE - %s" % sname.upper()]
+            sec = sname
+        L.append("  %-18s: %s" % (lab, val))
     L += ["", "LOCK CHECKS"]
     for c in rep["checks"]:
         L.append("%-28s %-8s %s" % (c["name"], c["result"], c.get("detail",
@@ -310,6 +316,25 @@ def write_pdf(path, rep):
                      "destroys the encryption keys, so the data cannot be "
                      "read (cryptographic erase, NIST SP 800-88).", s_small),
            Spacer(1, 5 * mm)]
+    det = d.get("details") or []
+    if det:
+        # all the device details, two items per row
+        cells = []
+        for sname, lab, val in det:
+            cells.append(Paragraph("<font color='#5B6B84'>%s - %s</font><br/>"
+                                   "<b>%s</b>" % (esc(sname), esc(lab),
+                                                  esc(val)), s_txt))
+        if len(cells) % 3:
+            cells += [""] * (3 - len(cells) % 3)
+        grid = Table([cells[i:i + 3] for i in range(0, len(cells), 3)],
+                     colWidths=[FW / 3.0] * 3)
+        grid.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LINEBELOW", (0, 0), (-1, -1), 0.3, LINE),
+            ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5)]))
+        el += [Paragraph("Device details", s_h), Spacer(1, 2 * mm), grid,
+               Spacer(1, 5 * mm)]
     tests = rep["tests"]
     fitted = [t for t in tests if t["status"] not in (NOT_FITTED,
                                                       NOT_TESTED)]

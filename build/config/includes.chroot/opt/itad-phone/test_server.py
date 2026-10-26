@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-test_server.py - ITAD PhoneSeal test page server (v0.1.0)
+test_server.py - ITAD PhoneSeal test page server (v0.3.0)
 
 The phone opens the test page by scanning a QR code shown on the station.
 The page runs the component tests in the phone's own browser (Safari on
@@ -63,7 +63,8 @@ def make_cert(ip):
             ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
              "-days", "825", "-keyout", key, "-out", crt,
              "-subj", "/CN=ITAD PhoneSeal station",
-             "-addext", "subjectAltName=IP:%s" % (ip or "127.0.0.1")],
+             "-addext", "subjectAltName=IP:127.0.0.1%s" % (
+                 (",IP:" + ip) if ip and ip != "127.0.0.1" else "")],
             capture_output=True, timeout=60, check=True)
     return crt, key
 
@@ -78,12 +79,11 @@ class TestServer:
         self.httpd = None
         self.url = ""
 
-    def start(self):
-        ip = station_ip()
-        if not ip:
-            raise RuntimeError("the station has no network connection - "
-                               "connect it to the same Wi-Fi / network as "
-                               "the phone")
+    def start(self, ip=None):
+        """Starts even without a network (then only Android over USB can
+        reach it, at 127.0.0.1). self.ip is "" when there is no network."""
+        ip = ip or station_ip()
+        self.ip = ip
         crt, key = make_cert(ip)
         srv = self
 
@@ -149,8 +149,17 @@ class TestServer:
                                             server_side=True)
         threading.Thread(target=self.httpd.serve_forever,
                          daemon=True).start()
-        self.url = "https://%s:%d/t/%s/" % (ip, PORT, self.token)
+        self.set_ip(ip)
         return self.url
+
+    @property
+    def path(self):
+        return "/t/%s/" % self.token
+
+    def set_ip(self, ip):
+        """Network changed (joined Wi-Fi, hotspot on): new address."""
+        self.ip = ip or ""
+        self.url = ("https://%s:%d%s" % (ip, PORT, self.path)) if ip else ""
 
     def stop(self):
         if self.httpd:

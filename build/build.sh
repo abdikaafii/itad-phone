@@ -47,7 +47,7 @@ mkdir -p "$INC/etc"
 OPT="$INC/etc/itad-optional-packages.txt"
 printf '%s\n' \
   adb fastboot android-sdk-platform-tools-common idevicerestore \
-  libirecovery-1.0-utils irecovery \
+  libirecovery-1.0-utils irecovery dnsmasq-base \
   ideviceinstaller libimobiledevice-utils python3-qrcode python3-imobiledevice \
   firmware-linux firmware-linux-nonfree firmware-misc-nonfree \
   firmware-iwlwifi firmware-realtek firmware-atheros firmware-brcm80211 \

@@ -18,8 +18,10 @@ Phones are plugged into the station by USB cable.
    carrier lock. Anything the phone does not report over USB is shown as
    **CHECK BY HAND** with the exact place to look. Never assumed clear.
    A locked phone gets a customer **removal request** saved automatically.
-4. **Tests**: the phone joins the same Wi-Fi as the station and scans a
-   QR code. The test page runs in the phone's own browser (no app):
+4. **Tests**: Android with USB debugging opens the test page over the USB
+   cable (no Wi-Fi). Other phones scan a QR code: on the same Wi-Fi, or on
+   the **station Wi-Fi** (press *Network > Start station Wi-Fi*, the phone
+   joins it with a second QR code). The test page runs in the phone's own browser (no app):
    touch screen, multi-touch, display, speakers, microphone, both cameras,
    vibration, motion sensors, buttons & ports. Battery health and charging
    are read by the station. The technician can change any result.
@@ -74,7 +76,8 @@ the setup screen and cannot open the test page.
 | File | What it does |
 |---|---|
 | `phone_window.py` | The station window |
-| `phone_core.py` | Finds phones, reads them, lock checks, wipe |
+| `phone_core.py` | Finds phones, reads everything (model, IMEI, battery, storage, RAM, chip, bootloader...), lock checks, wipe |
+| `net.py` | Network: Wi-Fi list, station Wi-Fi hotspot, Android test page over USB |
 | `test_server.py` | HTTPS test page server + QR code |
 | `web/index.html` | The test page that runs on the phone |
 | `phone_report.py` | Result rules and the signed PDF certificate |

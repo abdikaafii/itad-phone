@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-phone_window.py - ITAD PhoneSeal station window (v0.2.0)
+phone_window.py - ITAD PhoneSeal station window (v0.3.0)
+
+v0.3.0: no more flicker (lists update in place), Home / Back on every page,
+        Shut down button, Network window (Wi-Fi list + password, station
+        Wi-Fi hotspot with a join QR code), Android test page over the USB
+        cable (no Wi-Fi needed), phone details read again when incomplete.
 
 One phone at a time, in this order (phones must be tested BEFORE the wipe:
 after the wipe the phone is back on the Hello / Welcome screen):
@@ -27,11 +32,12 @@ import threading
 import time
 
 import itad_common as C
+import net
 import phone_core as core
 import phone_report as rpt
 from test_server import TestServer, qr_png
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 BG, BG2, SIDE = "#050F22", "#081831", "#061430"
@@ -64,9 +70,16 @@ class App:
         self.tech = ""
         self.server = None
         self.qr_img = None
+        self.wifi_img = None
+        self.res_gen = 0          # stops old refresh loops (flicker fix)
+        self.poll_gen = 0
+        self.last_sig = None
+        self.read_tries = 0
+        self.net_win = None
+        self.net_state = "none"
         self.reset_job()
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-        self.sc = max(0.8, min(1.3, min(sw / 1600.0, sh / 900.0)))
+        self.sc = max(0.7, min(1.3, min(sw / 1600.0, sh / 900.0)))
         root.title("ITAD PhoneSeal")
         root.configure(bg=BG)
         if windowed:
@@ -90,6 +103,7 @@ class App:
         self.show_login()
         root.bind("<Control-q>", lambda e: self.quit())
         root.after(100, self.pump)
+        root.after(500, self.net_poll)
 
     # ---------- small helpers ----------
     def F(self, size, bold=False):
@@ -177,9 +191,16 @@ class App:
                  bg="#06132A").pack(side="left")
         tk.Label(lf, text="  PhoneSeal", font=self.F(20, True), fg=TEXT,
                  bg="#06132A").pack(side="left")
+        self.btn(head, "Shut down", self.power_off, "danger").pack(
+            side="right", padx=(self.px(6), self.px(18)), pady=self.px(8))
+        self.btn(head, "Network", self.network_window, "ghost").pack(
+            side="right", padx=self.px(6), pady=self.px(8))
+        self.h_net = tk.Label(head, text="Network: checking...",
+                              font=self.F(10), fg=MUTED, bg="#06132A")
+        self.h_net.pack(side="right", padx=self.px(10))
         self.h_user = tk.Label(head, text="", font=self.F(12, True),
                                fg=TEXT, bg="#06132A")
-        self.h_user.pack(side="right", padx=self.px(24))
+        self.h_user.pack(side="right", padx=self.px(14))
         self.h_store = tk.Label(head, text="", font=self.F(10), bg="#06132A")
         self.h_store.pack(side="right", padx=self.px(10))
         self.h_store.configure(
@@ -207,29 +228,242 @@ class App:
         self.content.pack(side="left", fill="both", expand=True,
                           padx=self.px(26), pady=self.px(18))
 
-    def page(self, key, title, sub=""):
+    def page(self, key, title, sub="", back=None):
+        self.res_gen += 1         # any refresh loop of the old page stops
         for w in self.content.winfo_children():
             w.destroy()
         keys = [k for k, _ in STEPS]
         cur = keys.index(key)
+        self.cur_page = key
         for i, k in enumerate(keys):
             self.step_lbls[k].configure(
                 bg=BLUE if i == cur else SIDE,
                 fg="white" if i == cur else (OK if i < cur else DIM))
         self.lbl(self.content, title, 24, True).pack(anchor="w")
         if sub:
-            self.lbl(self.content, sub, 12, fg=MUTED).pack(
+            self.lbl(self.content, sub, 12, fg=MUTED, wraplength=1150).pack(
                 anchor="w", pady=(2, self.px(12)))
         bar = self.tk.Frame(self.content, bg=BG)
         bar.pack(side="bottom", fill="x", pady=(self.px(10), 0))
-        self.status = self.lbl(bar, "", 11, fg=MUTED)
+        nav = self.tk.Frame(bar, bg=BG)
+        nav.pack(side="left")
+        if key not in ("login", "job"):
+            self.btn(nav, "Home", self.go_home, "ghost").pack(
+                side="left", padx=(0, 6))
+        if back:
+            self.btn(nav, "< Back", back, "ghost").pack(
+                side="left", padx=(0, self.px(14)))
+        self.status = self.lbl(bar, "", 11, fg=MUTED, wraplength=650)
         self.status.pack(side="left")
         self.bar_right = self.tk.Frame(bar, bg=BG)
         self.bar_right.pack(side="right")
         return self.content
 
     def set_status(self, text, fg=MUTED):
-        self.status.configure(text=text, fg=fg)
+        if self.status.cget("text") != text or self.status.cget("fg") != fg:
+            self.status.configure(text=text, fg=fg)
+
+    def popup(self, title):
+        """Small window that always stays on top of the full screen."""
+        win = self.tk.Toplevel(self.root)
+        win.configure(bg=CARD)
+        win.title(title)
+        win.transient(self.root)
+        try:
+            win.attributes("-topmost", True)
+        except Exception:
+            pass
+        return win
+
+    def ask(self, title, text, on_yes, yes="Yes", no="Cancel"):
+        win = self.popup(title)
+        self.lbl(win, title, 15, True, bg=CARD).pack(
+            anchor="w", padx=self.px(22), pady=(self.px(16), 4))
+        self.lbl(win, text, 12, bg=CARD, wraplength=520).pack(
+            anchor="w", padx=self.px(22))
+        bf = self.tk.Frame(win, bg=CARD)
+        bf.pack(anchor="e", padx=self.px(22), pady=self.px(16))
+
+        def go():
+            win.destroy()
+            on_yes()
+        self.btn(bf, no, win.destroy, "ghost").pack(side="left", padx=4)
+        self.btn(bf, yes, go, "danger").pack(side="left", padx=4)
+        win.lift()
+        win.focus_force()
+
+    # ---------- top bar: home, shut down, network ----------
+    def go_home(self):
+        """Back to the Job + device page (this device's job is dropped)."""
+        if not self.tech:
+            self.show_login()
+            return
+        if self.s.get("phone") is None:
+            self.show_job()
+            return
+        txt = "Leave this device and go back to the start?"
+        w = (self.s.get("wipe") or {}).get("state")
+        if w and w != "RUNNING":
+            txt += ("\n\nThe device was already wiped (%s). Save its report "
+                    "first, or it is lost." % w)
+        elif w == "RUNNING":
+            txt = ("A wipe is running. Leave only if the device is "
+                   "disconnected.")
+        self.ask("Go back to the start", txt, self.next_phone, "Leave")
+
+    def power_off(self):
+        w = (self.s.get("wipe") or {}).get("state")
+        txt = "Switch off this station now?"
+        if w == "RUNNING":
+            txt = "A WIPE IS RUNNING. Switch off anyway?"
+        elif self.s.get("phone") is not None:
+            txt = "A device job is open (its report is not saved). " \
+                  "Switch off anyway?"
+
+        def off():
+            import subprocess
+            if self.server:
+                self.server.stop()
+            subprocess.call(["sync"])
+            if subprocess.call(["systemctl", "poweroff"]) != 0:
+                subprocess.call(["poweroff"])
+        self.ask("Shut down", txt, off, "Shut down")
+
+    def net_poll(self):
+        """Network line in the top bar, every 5 s (only redrawn if it
+        changed)."""
+        def done(r):
+            if isinstance(r, Exception):
+                r = ("No network", "none")
+            txt, st = r
+            self.net_state = st
+            col = {"ok": OK, "hotspot": CYAN}.get(st, WARN)
+            t = "Network: %s" % txt
+            if self.h_net.cget("text") != t:
+                self.h_net.configure(text=t, fg=col)
+            self.root.after(5000, self.net_poll)
+        self.bg(net.summary, done)
+
+    def network_window(self):
+        """Simple network settings: Wi-Fi list + password, station Wi-Fi."""
+        tk = self.tk
+        if self.net_win is not None:
+            try:
+                self.net_win.destroy()
+            except Exception:
+                pass
+        win = self.popup("Network")
+        self.net_win = win
+        self.lbl(win, "Network", 18, True, bg=CARD).pack(
+            anchor="w", padx=self.px(22), pady=(self.px(16), 2))
+        self.lbl(win, "The phone must reach this station for the test page. "
+                 "Android with USB debugging works over the cable without "
+                 "any network.", 11, fg=MUTED, bg=CARD,
+                 wraplength=640).pack(anchor="w", padx=self.px(22))
+        n_stat = self.lbl(win, "Now: %s" % self.h_net.cget("text")[9:], 12,
+                          True, fg=CYAN, bg=CARD)
+        n_stat.pack(anchor="w", padx=self.px(22), pady=(self.px(8), 0))
+        # --- Wi-Fi list
+        f, c = self.card(win, "1. Join a Wi-Fi network")
+        f.pack(fill="x", padx=self.px(22), pady=(self.px(10), 0))
+        lb = tk.Listbox(c, font=self.F(13), height=6, bg=CARD2, fg=TEXT,
+                        selectbackground=BLUE, selectforeground="white",
+                        highlightthickness=0, relief="flat",
+                        activestyle="none")
+        lb.pack(fill="x")
+        nets = []
+        row = tk.Frame(c, bg=CARD)
+        row.pack(fill="x", pady=(self.px(8), 0))
+        self.lbl(row, "PASSWORD", 10, True, fg=MUTED).pack(side="left")
+        v_pw = tk.StringVar()
+        pw = self.entry(row, v_pw, secret=True, width=22)
+        pw.pack(side="left", padx=self.px(8), ipady=self.px(4))
+        msg = self.lbl(c, "", 11, fg=MUTED, wraplength=620)
+        msg.pack(anchor="w", pady=(self.px(6), 0))
+
+        def show_nets(r):
+            if not win.winfo_exists():
+                return
+            lb.delete(0, "end")
+            nets[:] = [] if isinstance(r, Exception) else r
+            for n in nets:
+                lb.insert("end", "%s%s   %d%%%s" % (
+                    "* " if n["in_use"] else "  ", n["ssid"], n["signal"],
+                    "   (locked)" if n["secure"] else ""))
+            msg.configure(text="" if nets else "No Wi-Fi networks found "
+                          "(no Wi-Fi card, or switched off). Use a network "
+                          "cable or Android over USB.", fg=MUTED if nets
+                          else WARN)
+
+        def do_scan():
+            msg.configure(text="Looking for Wi-Fi networks...", fg=MUTED)
+            self.bg(net.scan, show_nets)
+
+        def do_connect():
+            sel = lb.curselection()
+            if not sel:
+                msg.configure(text="Tap a network in the list first.",
+                              fg=WARN)
+                return
+            n = nets[sel[0]]
+            msg.configure(text="Connecting to %s..." % n["ssid"], fg=MUTED)
+            self.bg(lambda: net.connect(n["ssid"], v_pw.get()),
+                    lambda r: after_change(r, msg))
+        bf = tk.Frame(c, bg=CARD)
+        bf.pack(anchor="w", pady=(self.px(6), 0))
+        self.btn(bf, "Connect", do_connect).pack(side="left")
+        self.btn(bf, "Scan again", do_scan, "ghost").pack(side="left",
+                                                          padx=6)
+        lb.bind("<<ListboxSelect>>", lambda e: pw.focus_set())
+        pw.bind("<Return>", lambda e: do_connect())
+        # --- hotspot
+        f2, c2 = self.card(win, "2. Or: station Wi-Fi (no router needed)")
+        f2.pack(fill="x", padx=self.px(22), pady=(self.px(10), 0))
+        self.lbl(c2, "The station makes its own Wi-Fi. The phone joins it by "
+                 "scanning a QR code on the test page.", 11, fg=MUTED,
+                 wraplength=620).pack(anchor="w")
+        msg2 = self.lbl(c2, "", 11, fg=MUTED, wraplength=620)
+        msg2.pack(anchor="w", pady=(self.px(4), 0))
+
+        def hs_on():
+            msg2.configure(text="Starting the station Wi-Fi...", fg=MUTED)
+            self.bg(net.hotspot_start, lambda r: after_change(
+                (r[0], r[1]) if not isinstance(r, Exception) else
+                (False, str(r)), msg2))
+
+        def hs_off():
+            self.bg(lambda: (net.hotspot_stop(), (True, "Station Wi-Fi off"))
+                    [1], lambda r: after_change(r, msg2))
+        bf2 = tk.Frame(c2, bg=CARD)
+        bf2.pack(anchor="w", pady=(self.px(6), 0))
+        self.btn(bf2, "Start station Wi-Fi", hs_on).pack(side="left")
+        self.btn(bf2, "Stop it", hs_off, "ghost").pack(side="left", padx=6)
+
+        def after_change(r, label):
+            ok, text = r if not isinstance(r, Exception) else (False, str(r))
+            if win.winfo_exists():
+                label.configure(text=text, fg=OK if ok else BAD)
+            self.bg(net.summary, lambda s: (
+                n_stat.configure(text="Now: %s" % s[0]) if
+                (not isinstance(s, Exception) and win.winfo_exists())
+                else None))
+            if ok and self.server and self.cur_page == "tests":
+                self.show_tests()      # new address / QR codes
+
+        def advanced():
+            import subprocess
+            try:
+                subprocess.Popen(["xterm", "-e", "nmtui"])
+            except Exception as e:
+                msg.configure(text="Could not open: %s" % e, fg=BAD)
+        bf3 = tk.Frame(win, bg=CARD)
+        bf3.pack(fill="x", padx=self.px(22), pady=self.px(14))
+        self.btn(bf3, "Close", win.destroy).pack(side="right")
+        self.btn(bf3, "Cable / advanced settings", advanced, "ghost").pack(
+            side="left")
+        win.lift()
+        win.focus_force()
+        do_scan()
 
     # ---------- 1. sign in ----------
     def show_login(self):
@@ -327,7 +561,9 @@ class App:
         self.btn(self.bar_right, "Sign out", self.sign_out, "ghost").pack(
             side="left", padx=6)
         self.polling = True
-        self.poll_phones()
+        self.poll_gen += 1
+        self.last_sig = None
+        self.poll_phones(self.poll_gen)
 
     def sign_out(self):
         self.polling = False
@@ -336,16 +572,23 @@ class App:
         self.reset_job()
         self.show_login()
 
-    def poll_phones(self):
-        if not self.polling:
+    def poll_phones(self, gen):
+        if not self.polling or gen != self.poll_gen:
             return
-        self.bg(core.list_phones, self.draw_phones)
+        self.bg(core.list_phones, lambda r: self.draw_phones(r, gen))
 
-    def draw_phones(self, phones):
-        if not self.polling:
+    def draw_phones(self, phones, gen):
+        if not self.polling or gen != self.poll_gen:
             return
         if isinstance(phones, Exception):
             phones = []
+        sig = repr([(p["platform"], p["id"], p["state"], p["label"])
+                    for p in phones])
+        if sig == self.last_sig:
+            # nothing changed: leave the screen alone (no flicker)
+            self.root.after(2500, lambda: self.poll_phones(gen))
+            return
+        self.last_sig = sig
         for w in self.ph_list.winfo_children():
             w.destroy()
         if not phones:
@@ -384,7 +627,7 @@ class App:
                 self.btn(r, "Ask to trust", lambda p=p: self.bg(
                     lambda: core.pair_ios(p["id"]), lambda r: None),
                     "ghost").pack(side="right", padx=self.px(10), pady=6)
-        self.root.after(2500, self.poll_phones)
+        self.root.after(2500, lambda: self.poll_phones(gen))
 
     def add_manual(self):
         self.pick_phone({"platform": "manual", "id": "manual",
@@ -397,6 +640,7 @@ class App:
             self.set_status("Job ID and Asset ID are needed.", WARN)
             return
         self.polling = False
+        self.read_tries = 0
         self.s.update(job_id=self.v_job.get().strip(),
                       asset_id=self.v_asset.get().strip(),
                       location=self.v_loc.get().strip(), phone=p,
@@ -421,7 +665,8 @@ class App:
         manual = self.s.get("manual")
         self.page("checks", "Device details",
                   "Type what is on the device, its box or SIM tray (IMEI: "
-                  "dial *#06# or look on the SIM tray / back).")
+                  "dial *#06# or look on the SIM tray / back).",
+                  back=self.back_to_job)
         f, c = self.card(self.content)
         f.pack(fill="x")
         grid = tk.Frame(c, bg=CARD)
@@ -472,8 +717,6 @@ class App:
                      "on the setup screen. The report says 'not tested - "
                      "passcode unknown'.", 12, fg=WARN,
                      wraplength=1100).pack(anchor="w", pady=self.px(12))
-        self.btn(self.bar_right, "Back", self.back_to_job, "ghost").pack(
-            side="left", padx=6)
         self.btn(self.bar_right, "Continue", self.device_form_done).pack(
             side="left", padx=6)
 
@@ -518,10 +761,12 @@ class App:
 
     # ---------- 3. lock checks ----------
     def show_checks(self):
+        self.read_tries = 0
         self.page("checks", "Lock checks", "The phone must be free of the "
-                  "customer's locks before it is wiped.")
-        self.lbl(self.content, "Reading the phone...", 14, fg=CYAN).pack(
-            anchor="w")
+                  "customer's locks before it is wiped.",
+                  back=self.back_to_job)
+        self.lbl(self.content, "Reading the phone (all details)...", 14,
+                 fg=CYAN).pack(anchor="w")
         self.bg(lambda: core.read_phone(self.s["phone"]), self.checks_read)
 
     def checks_read(self, res):
@@ -529,6 +774,18 @@ class App:
             self.set_status("Could not read the phone: %s" % res, BAD)
             return
         info, checks = res
+        missing = [k for k in ("serial", "model", "os", "battery_level")
+                   if not info.get(k) or info.get(k) in ("unknown", "iOS ?",
+                                                         "Android ?")]
+        if missing and not info.get("error") and self.read_tries < 2:
+            # right after Trust / Allow the phone does not give everything
+            # yet - wait a moment and read it again
+            self.read_tries += 1
+            self.say("read %d incomplete (%s) - reading again" % (
+                self.read_tries, ", ".join(missing)))
+            self.root.after(3000, lambda: self.bg(
+                lambda: core.read_phone(self.s["phone"]), self.checks_read))
+            return
         self.s["info"], self.s["checks"] = info, checks
         self.say("read: %s" % {k: info.get(k) for k in ("make", "model",
                                                         "serial", "os")})
@@ -542,33 +799,51 @@ class App:
                       "first setup screens: confirm what it asks for.")
         else:
             self.page("checks", "Lock checks", "The device must be free of "
-                      "the customer's locks before it is wiped.")
+                      "the customer's locks before it is wiped.",
+                      back=self.show_device_form if self.s.get("manual")
+                      else self.back_to_job)
         info = self.s["info"]
         if info.get("error"):
             self.lbl(self.content, info["error"], 14, fg=BAD,
                      wraplength=1100).pack(anchor="w")
-            self.btn(self.bar_right, "Back", self.show_job, "ghost").pack()
+            self.btn(self.bar_right, "Read again", self.show_checks).pack()
             return
         row = tk.Frame(self.content, bg=BG)
         row.pack(fill="both", expand=True)
-        f, c = self.card(row, "Phone")
+        f, c = self.card(row, info.get("kind") or "Device")
         f.pack(side="left", fill="y", padx=(0, self.px(14)))
         self.v_imei = tk.StringVar(value=", ".join(info.get("imei") or []))
-        for k, v in (("Type", info.get("kind", "")),
-                     ("Make / model", "%s %s" % (info.get("make", ""),
-                                                 info.get("model", ""))),
-                     ("Serial", info.get("serial")), ("OS", info.get("os")),
-                     ("Storage", "%s GB" % (info.get("storage_gb") or "?")),
-                     ("Battery", rpt.battery_text(info))):
-            self.lbl(c, k.upper(), 9, True, fg=MUTED).pack(anchor="w")
-            self.lbl(c, v or "-", 13, True, wraplength=340).pack(
-                anchor="w", pady=(0, self.px(8)))
+        self.lbl(c, "%s %s" % (info.get("make", ""), info.get("model", "")),
+                 15, True, wraplength=340).pack(anchor="w")
+        self.lbl(c, " ".join(x for x in (info.get("os"), (
+            "%s GB" % info["storage_gb"]) if info.get("storage_gb") else "",
+            info.get("colour")) if x), 11, fg=CYAN, wraplength=340).pack(
+            anchor="w", pady=(0, self.px(8)))
+        grid = tk.Frame(c, bg=CARD)
+        grid.pack(anchor="w", fill="x")
+        for i, (k, v) in enumerate((
+                ("SERIAL", info.get("serial")),
+                ("BATTERY", rpt.battery_text(info)),
+                ("STORAGE USED", ("%s / %s GB free" % (
+                    info["storage_used_gb"], info["storage_free_gb"]))
+                 if info.get("storage_used_gb") is not None else ""),
+                ("SIM", info.get("sim") or ""))):
+            if not v:
+                continue
+            self.lbl(grid, k, 9, True, fg=MUTED).grid(
+                row=i * 2, column=0, sticky="w")
+            self.lbl(grid, v, 12, True, wraplength=340).grid(
+                row=i * 2 + 1, column=0, sticky="w", pady=(0, self.px(6)))
         self.lbl(c, "IMEI (dial *#06# if empty)", 9, True, fg=MUTED).pack(
             anchor="w")
         self.entry(c, self.v_imei, width=20).pack(anchor="w",
                                                   ipady=self.px(4))
         for n in info.get("notes") or []:
             self.lbl(c, n, 9, fg=WARN, wraplength=340).pack(anchor="w")
+        if info.get("details"):
+            self.btn(c, "All details (%d)" % len(info["details"]),
+                     self.show_details, "ghost").pack(
+                anchor="w", pady=(self.px(10), 0))
         f, c = self.card(row, "Locks")
         f.pack(side="left", fill="both", expand=True)
         for i, ch in enumerate(self.s["checks"]):
@@ -614,6 +889,51 @@ class App:
             self.set_status("All clear.", OK)
             self.btn(self.bar_right, "Continue to tests",
                      self.show_tests).pack(side="left", padx=6)
+
+    def show_details(self):
+        """Everything read from the device, grouped in sections."""
+        info = self.s["info"]
+        if self.v_imei.get().strip():
+            info["imei"] = [x.strip() for x in self.v_imei.get().split(",")
+                            if x.strip()]
+        rows = core.details_list(info)
+        win = self.popup("Device details")
+        self.lbl(win, "%s %s" % (info.get("make", ""), info.get("model", "")),
+                 17, True, bg=CARD).pack(anchor="w", padx=self.px(22),
+                                         pady=(self.px(14), 2))
+        body = self.tk.Frame(win, bg=CARD)
+        body.pack(fill="both", padx=self.px(16), pady=self.px(6))
+        sections = []
+        for sec, lab, val in rows:
+            if not sections or sections[-1][0] != sec:
+                sections.append((sec, []))
+            sections[-1][1].append((lab, val))
+        # two columns of section cards, balanced by number of lines
+        cols = [self.tk.Frame(body, bg=CARD), self.tk.Frame(body, bg=CARD)]
+        for cf in cols:
+            cf.pack(side="left", fill="y", anchor="n", padx=self.px(6))
+        heights = [0, 0]
+        for sec, items in sections:
+            ci = 0 if heights[0] <= heights[1] else 1
+            heights[ci] += len(items) + 2
+            box = self.tk.Frame(cols[ci], bg=CARD2,
+                                highlightbackground=BORDER,
+                                highlightthickness=1)
+            box.pack(fill="x", pady=self.px(4))
+            self.lbl(box, sec.upper(), 9, True, fg=CYAN).grid(
+                row=0, column=0, columnspan=2, sticky="w",
+                padx=self.px(10), pady=(self.px(6), 2))
+            for j, (lab, val) in enumerate(items, start=1):
+                self.lbl(box, lab, 10, fg=MUTED).grid(
+                    row=j, column=0, sticky="nw", padx=(self.px(10), 6))
+                self.lbl(box, val, 10, True, wraplength=300).grid(
+                    row=j, column=1, sticky="nw", padx=(0, self.px(10)))
+            self.tk.Frame(box, bg=CARD2, height=self.px(6)).grid(
+                row=len(items) + 1, column=0)
+        self.btn(win, "Close", win.destroy).pack(anchor="e", padx=self.px(22),
+                                                 pady=self.px(12))
+        win.lift()
+        win.focus_force()
 
     def after_wipe_buttons(self, overall):
         """Locked / hand-added devices: checks are confirmed by the
@@ -687,63 +1007,123 @@ class App:
     # ---------- 4. tests ----------
     def show_tests(self):
         tk = self.tk
-        info = self.s["info"]
+        info, p = self.s["info"], self.s["phone"]
         if self.v_imei.get().strip():
             info["imei"] = [x.strip() for x in self.v_imei.get().split(",")
                             if x.strip()]
-        self.page("tests", "Component tests", "Connect the phone to the "
-                  "SAME Wi-Fi as the station, open the camera and scan the "
-                  "QR code.")
-        # station-side results
+        usb_android = p["platform"] == "android" and p.get("state") == \
+            "ready" and p.get("usb") is not False
+        self.page("tests", "Component tests",
+                  "The tests run on the phone, in its web browser. "
+                  + ("The test page opens on the phone over the USB cable."
+                     if usb_android else
+                     "Join the phone to the same network as the station "
+                     "(or the station Wi-Fi), then scan the QR code."),
+                  back=self.draw_checks)
         self.station_results()
+        hs = net.hotspot_info()
+        ip = hs[2] if hs and hs[2] else None
+        err = ""
         if not self.server:
             self.server = TestServer("%s / %s" % (self.s["job_id"],
                                                   self.s["asset_id"]))
             try:
-                url = self.server.start()
-                qr_png(url, "/tmp/phoneseal_qr.png", 9)
+                self.server.start(ip)
             except Exception as e:
                 self.server = None
-                self.lbl(self.content, "The test page could not start: %s"
-                         % e, 13, fg=BAD, wraplength=1100).pack(anchor="w")
-                self.btn(self.bar_right, "Wi-Fi settings", self.wifi,
-                         "ghost").pack(side="left", padx=6)
-                self.btn(self.bar_right, "Try again", self.show_tests,
-                         "ghost").pack(side="left", padx=6)
-                url = ""
+                err = str(e)
         else:
-            url = self.server.url
+            from test_server import station_ip
+            self.server.set_ip(ip or station_ip())
+        url = self.server.url if self.server else ""
         row = tk.Frame(self.content, bg=BG)
         row.pack(fill="both", expand=True)
-        f, c = self.card(row, "Scan with the phone")
+        f, c = self.card(row, "Open the test page on the phone")
         f.pack(side="left", fill="y", padx=(0, self.px(14)))
-        if url:
+        if err:
+            self.lbl(c, "The test page could not start: %s" % err, 11,
+                     fg=BAD, wraplength=330).pack(anchor="w")
+        elif usb_android:
+            self.u_msg = self.lbl(c, "Opening on the phone over USB...", 12,
+                                  True, fg=CYAN, wraplength=330)
+            self.u_msg.pack(anchor="w")
+            self.lbl(c, "On the phone: tap Advanced > Proceed (once), then "
+                     "follow the tests.", 10, fg=MUTED, wraplength=330).pack(
+                anchor="w", pady=(self.px(6), 0))
+            self.btn(c, "Open it again on the phone", self.open_usb,
+                     "ghost").pack(anchor="w", pady=(self.px(8), 0))
+            self.open_usb()
+        if not err and url and not usb_android:
+            if hs:
+                self.lbl(c, "1. Join the station Wi-Fi: scan this", 11, True,
+                         fg=CYAN).pack(anchor="w")
+                try:
+                    qr_png(net.wifi_qr_text(hs[0], hs[1]),
+                           "/tmp/phoneseal_wifi.png", 4)
+                    self.wifi_img = tk.PhotoImage(
+                        file="/tmp/phoneseal_wifi.png")
+                    tk.Label(c, image=self.wifi_img, bg="white").pack(
+                        pady=self.px(4))
+                except Exception:
+                    pass
+                self.lbl(c, "Wi-Fi %s   password %s" % (hs[0], hs[1]), 10,
+                         fg=TEXT, wraplength=330).pack(anchor="w")
+                self.lbl(c, "2. Then scan this to open the tests", 11, True,
+                         fg=CYAN).pack(anchor="w", pady=(self.px(8), 0))
             try:
+                qr_png(url, "/tmp/phoneseal_qr.png", 4 if hs else 7)
                 self.qr_img = tk.PhotoImage(file="/tmp/phoneseal_qr.png")
                 tk.Label(c, image=self.qr_img, bg="white").pack(
-                    pady=self.px(6))
+                    pady=self.px(4))
             except Exception:
                 pass
-            self.lbl(c, url, 10, fg=CYAN, wraplength=320).pack(anchor="w")
-            self.lbl(c, "The phone warns about the certificate once:\n"
-                     "iPhone: Show Details > visit this website\n"
-                     "Android: Advanced > Proceed", 10, fg=MUTED,
-                     wraplength=320).pack(anchor="w", pady=(self.px(8), 0))
+            self.lbl(c, url, 9, fg=CYAN, wraplength=330).pack(anchor="w")
+            self.lbl(c, "The phone warns about the certificate once: iPhone "
+                     "Show Details > visit this website; Android Advanced > "
+                     "Proceed.", 9, fg=MUTED, wraplength=330).pack(
+                anchor="w", pady=(self.px(4), 0))
+        elif not err and not usb_android:
+            self.lbl(c, "No network yet.", 14, True, fg=WARN).pack(anchor="w")
+            self.lbl(c, "Press Network: pick the Wi-Fi and type its password, "
+                     "or start the station Wi-Fi. Or test by hand.", 11,
+                     fg=TEXT, wraplength=330).pack(anchor="w",
+                                                   pady=self.px(6))
+            self.btn(c, "Network", self.network_window).pack(
+                anchor="w", pady=(self.px(4), 0))
+        self.btn(c, "Test by hand", self.test_by_hand, "ghost").pack(
+            anchor="w", pady=(self.px(10), 0))
         f, c = self.card(row, "Results (tap one to change it)")
         f.pack(side="left", fill="both", expand=True)
         self.res_box = tk.Frame(c, bg=CARD)
         self.res_box.pack(fill="both", expand=True)
+        self.build_results()
         self.btn(self.bar_right, "Finish tests", self.finish_tests).pack(
             side="left", padx=6)
-        self.refresh_results()
+        gen = self.res_gen
+        self.refresh_results(gen)
+
+    def open_usb(self):
+        p = self.s["phone"]
+        if not self.server:
+            return
+
+        def done(r):
+            ok, txt = r if not isinstance(r, Exception) else (False, str(r))
+            try:
+                self.u_msg.configure(text=("Test page opened on the phone"
+                                           if ok else txt),
+                                     fg=OK if ok else WARN)
+            except Exception:
+                pass
+        self.bg(lambda: net.android_usb_open(p["id"], self.server.path),
+                done)
+
+    def test_by_hand(self):
+        self.set_status("Test each item on the phone yourself, then tap its "
+                        "result on the right to set PASS / FAIL.", CYAN)
 
     def wifi(self):
-        """Network settings in a terminal (nmtui)."""
-        import subprocess
-        try:
-            subprocess.Popen(["xterm", "-e", "nmtui"])
-        except Exception as e:
-            self.set_status("Could not open Wi-Fi settings: %s" % e, BAD)
+        self.network_window()
 
     def station_results(self):
         info, t = self.s["info"], self.s["tests"]
@@ -772,47 +1152,54 @@ class App:
                              "not charging - check cable / port",
                              "auto": True}
 
-    def refresh_results(self):
-        if not hasattr(self, "res_box") or not self.res_box.winfo_exists():
+    def test_names(self):
+        return WEB_TESTS + ["Battery health", "Charging"]
+
+    def build_results(self):
+        """The result rows are made ONCE; refresh only changes the text."""
+        self.res_labels = {}
+        for i, n in enumerate(self.test_names()):
+            fr = self.tk.Frame(self.res_box, bg=CARD2)
+            fr.grid(row=i // 2, column=i % 2, sticky="ew", padx=4, pady=3)
+            self.lbl(fr, n, 12, True).pack(side="left", padx=self.px(10),
+                                           pady=self.px(6))
+            lab = self.lbl(fr, "", 12, True, cursor="hand2")
+            lab.pack(side="right", padx=self.px(10))
+            lab.bind("<Button-1>", lambda e, n=n: self.change_result(n))
+            fr.bind("<Button-1>", lambda e, n=n: self.change_result(n))
+            self.res_labels[n] = lab
+        self.res_box.grid_columnconfigure(0, weight=1)
+        self.res_box.grid_columnconfigure(1, weight=1)
+
+    def refresh_results(self, gen=None):
+        if gen is not None and gen != self.res_gen:
+            return                     # page changed: this loop ends
+        if not getattr(self, "res_labels", None):
             return
         if self.server:
             for k, v in self.server.results.items():
                 if not self.s["tests"].get(k, {}).get("set_by"):
                     self.s["tests"][k] = dict(v)
-        for w in self.res_box.winfo_children():
-            w.destroy()
-        names = WEB_TESTS + ["Battery health", "Charging"]
         done = 0
-        for i, n in enumerate(names):
+        for n, lab in self.res_labels.items():
             r = self.s["tests"].get(n)
             st = r["status"] if r else "waiting"
             if r and st in ("PASS", "FAIL", "N/A"):
                 done += 1
             col = {"PASS": OK, "FAIL": BAD, "N/A": MUTED, "waiting": DIM,
                    NOT_TESTED: MUTED}.get(st, WARN)
-            fr = self.tk.Frame(self.res_box, bg=CARD2)
-            fr.grid(row=i // 2, column=i % 2, sticky="ew", padx=4, pady=3)
-            self.lbl(fr, n, 12, True).pack(side="left", padx=self.px(10),
-                                           pady=self.px(6))
-            lab = self.lbl(fr, st if st != "SKIP" else "skipped", 12, True,
-                           fg=col, cursor="hand2")
-            lab.pack(side="right", padx=self.px(10))
-            lab.bind("<Button-1>", lambda e, n=n: self.change_result(n))
-        self.res_box.grid_columnconfigure(0, weight=1)
-        self.res_box.grid_columnconfigure(1, weight=1)
-        self.set_status("%d of %d results in" % (done, len(names)))
-        self.root.after(1000, self.refresh_results)
+            txt = st if st != "SKIP" else "skipped"
+            if lab.cget("text") != txt or lab.cget("fg") != col:
+                lab.configure(text=txt, fg=col)
+        if not str(self.status.cget("text")).startswith("Test each item"):
+            self.set_status("%d of %d results in" % (done,
+                                                      len(self.res_labels)))
+        if gen is not None:
+            self.root.after(1000, lambda: self.refresh_results(gen))
 
     def change_result(self, name):
         tk = self.tk
-        win = tk.Toplevel(self.root)
-        win.configure(bg=CARD)
-        win.title(name)
-        win.transient(self.root)
-        try:
-            win.attributes("-topmost", True)
-        except Exception:
-            pass
+        win = self.popup(name)
         self.lbl(win, name, 16, True, bg=CARD).pack(padx=20, pady=(16, 8))
         bf = tk.Frame(win, bg=CARD)
         bf.pack(padx=20, pady=(0, 16))
@@ -822,12 +1209,15 @@ class App:
                                      self.tech, "auto": False,
                                      "set_by": self.tech}
             win.destroy()
+            self.refresh_results()
         self.btn(bf, "PASS", lambda: set_("PASS"), "ok").pack(side="left",
                                                               padx=4)
         self.btn(bf, "FAIL", lambda: set_("FAIL"), "danger").pack(
             side="left", padx=4)
         self.btn(bf, "Not fitted", lambda: set_("N/A"), "ghost").pack(
             side="left", padx=4)
+        self.btn(bf, "Cancel", win.destroy, "ghost").pack(side="left",
+                                                          padx=4)
         win.lift()
         win.focus_force()
 
@@ -846,9 +1236,13 @@ class App:
     def show_wipe(self):
         tk = self.tk
         p, info = self.s["phone"], self.s["info"]
+        back = None
+        if not self.s["wipe"]:
+            back = self.show_device_form if self.s.get("locked") else \
+                self.show_tests
         self.page("wipe", "Wipe", "Erases everything on the phone. The "
                   "phone's storage is encrypted, so this destroys the "
-                  "keys and the data cannot be read.")
+                  "keys and the data cannot be read.", back=back)
         f, c = self.card(self.content, "Method")
         f.pack(fill="x")
         methods = core.wipe_methods(p, info, self.s.get("locked") or
@@ -1055,7 +1449,9 @@ class App:
                "started": C.fmt_time(s["started"]),
                "finished": fin.strftime("%Y-%m-%d %H:%M:%S"),
                "duration": C.fmt_dur(s["started"], fin),
-               "device": {k: v for k, v in info.items() if k != "raw_keys"},
+               "device": dict({k: v for k, v in info.items()
+                               if k != "raw_keys"},
+                              details=core.details_list(info)),
                "checks": s["checks"], "wipe": s["wipe"], "tests": tests,
                "observations": {"grade": self.v_grade.get(),
                                 "notes": self.v_notes.get().strip()},

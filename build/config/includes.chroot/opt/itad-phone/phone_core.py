@@ -31,7 +31,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 
 def run(cmd, timeout=30, inp=None):
@@ -332,11 +332,92 @@ def _kv(text):
     return d
 
 
+def _num(v, div=1.0, nd=1):
+    try:
+        x = float(v) / div
+        return round(x, nd) if nd else int(round(x))
+    except (TypeError, ValueError):
+        return None
+
+
+def _gb(v):
+    try:
+        return round(int(v) / 1e9, 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def details_list(r):
+    """Everything read, grouped, for the screen and the report:
+    [(section, label, value)] - empty values are left out."""
+    yes = lambda b: {True: "Yes", False: "No"}.get(b, b)  # noqa: E731
+    rows = [
+        ("Identity", "Type", r.get("kind")),
+        ("Identity", "Make", r.get("make")),
+        ("Identity", "Model", r.get("model")),
+        ("Identity", "Model code", r.get("model_id")),
+        ("Identity", "Model number", r.get("model_number")),
+        ("Identity", "Region", r.get("region")),
+        ("Identity", "Colour", r.get("colour")),
+        ("Identity", "Serial", r.get("serial")),
+        ("Identity", "IMEI", ", ".join(r.get("imei") or [])),
+        ("Identity", "MEID", r.get("meid")),
+        ("Identity", "ECID", r.get("ecid")),
+        ("Identity", "UDID", r.get("udid")),
+        ("Identity", "Device code", r.get("device_code")),
+        ("Software", "OS", r.get("os")),
+        ("Software", "Build", r.get("build")),
+        ("Software", "Security patch", r.get("security_patch")),
+        ("Software", "Modem firmware", r.get("baseband")),
+        ("Software", "Region / CSC", r.get("csc")),
+        ("Software", "Bootloader", r.get("bootloader")),
+        ("Software", "Rooted / modified", yes(r.get("rooted"))),
+        ("Software", "Encryption", r.get("encrypted")),
+        ("Hardware", "Chip", r.get("chip")),
+        ("Hardware", "RAM", ("%s GB" % r["ram_gb"]) if r.get("ram_gb")
+         else ""),
+        ("Hardware", "Storage", ("%s GB" % r["storage_gb"])
+         if r.get("storage_gb") else ""),
+        ("Hardware", "Storage used", ("%s GB used, %s GB free" % (
+            r["storage_used_gb"], r["storage_free_gb"]))
+         if r.get("storage_used_gb") is not None and
+         r.get("storage_free_gb") is not None else ""),
+        ("Hardware", "Screen", r.get("screen")),
+        ("Hardware", "Wi-Fi MAC", r.get("wifi_mac")),
+        ("Hardware", "Bluetooth MAC", r.get("bt_mac")),
+        ("Battery", "Charge", ("%s%%" % r["battery_level"])
+         if str(r.get("battery_level", "")).strip() else ""),
+        ("Battery", "Health", ("%s%%" % r["battery_health_pct"])
+         if r.get("battery_health_pct") is not None else ""),
+        ("Battery", "Condition", r.get("battery_status")),
+        ("Battery", "Cycles", r.get("battery_cycles")),
+        ("Battery", "Capacity", ("%s of %s mAh" % (
+            r["battery_full_mah"], r["battery_design_mah"]))
+         if r.get("battery_full_mah") and r.get("battery_design_mah")
+         else ""),
+        ("Battery", "Temperature", ("%s C" % r["battery_temp_c"])
+         if r.get("battery_temp_c") is not None else ""),
+        ("Battery", "Voltage", ("%s V" % r["battery_voltage"])
+         if r.get("battery_voltage") else ""),
+        ("Battery", "Type", r.get("battery_tech")),
+        ("Battery", "Charging", yes({"true": True, "false": False}.get(
+            str(r.get("battery_charging", "")).lower(),
+            r.get("battery_charging")))),
+        ("Network", "SIM", r.get("sim")),
+        ("Network", "Carrier", r.get("carrier")),
+        ("Status", "Activation", r.get("activation_state")),
+        ("Status", "Passcode set", yes({"true": True, "false": False}.get(
+            str(r.get("passcode_set", "")).lower(), r.get("passcode_set")))),
+    ]
+    return [(s, l, str(v)) for s, l, v in rows
+            if v not in (None, "", [], "unknown", "None")]
+
+
 def ios_info(udid):
-    r = {"platform": "ios", "id": udid, "notes": []}
+    r = {"platform": "ios", "id": udid, "notes": [], "udid": udid}
     rc, o, e = run(["ideviceinfo", "-u", udid], 20)
     if rc != 0:
-        r["error"] = (e or o).strip()[:200] or "could not read the iPhone"
+        r["error"] = (e or o).strip()[:200] or "could not read the device"
         return r
     k = _kv(o)
     r["raw_keys"] = sorted(k.keys())
@@ -347,14 +428,33 @@ def ios_info(udid):
     r["model_id"] = pt
     r["model_number"] = (k.get("ModelNumber", "") +
                          k.get("RegionInfo", "")).strip()
-    r["os"] = "iOS %s" % k.get("ProductVersion", "?")
+    r["region"] = k.get("RegionInfo", "")
+    ver = k.get("ProductVersion", "?")
+    major = ver.split(".")[0]
+    major = int(major) if major.isdigit() else 0
+    r["os"] = ("iPadOS %s" if r["kind"] == "iPad" and major >= 13 else
+               "iOS %s") % ver
+    r["build"] = k.get("BuildVersion", "")
+    r["baseband"] = k.get("BasebandVersion", "")
     r["serial"] = k.get("SerialNumber", "")
     imeis = [k.get("InternationalMobileEquipmentIdentity", ""),
              k.get("InternationalMobileEquipmentIdentity2", "")]
     r["imei"] = [i for i in imeis if i]
-    r["colour"] = k.get("DeviceColor", "")
+    r["meid"] = k.get("MobileEquipmentIdentifier", "")
+    r["ecid"] = k.get("UniqueChipID", "")
+    col = k.get("DeviceColor", "")
+    r["colour"] = "" if col.isdigit() or col.startswith("#") else col
+    r["chip"] = " ".join(x for x in (k.get("HardwareModel", ""),
+                                     k.get("CPUArchitecture", "")) if x)
+    r["wifi_mac"] = k.get("WiFiAddress", "")
+    r["bt_mac"] = k.get("BluetoothAddress", "")
     r["activation_state"] = k.get("ActivationState", "unknown")
     r["passcode_set"] = k.get("PasswordProtected", "unknown")
+    sim = k.get("SIMStatus", "")
+    r["sim"] = {"kCTSIMSupportSIMStatusNotInserted": "No SIM",
+                "kCTSIMSupportSIMStatusReady": "SIM inserted",
+                "kCTSIMSupportSIMStatusPINLocked": "SIM PIN locked"}.get(
+        sim, sim.replace("kCTSIMSupportSIMStatus", ""))
     # storage
     rc, o, _ = run(["ideviceinfo", "-u", udid, "-q", "com.apple.disk_usage"],
                    15)
@@ -363,6 +463,11 @@ def ios_info(udid):
         r["storage_gb"] = round(int(dk.get("TotalDiskCapacity", "0")) / 1e9)
     except ValueError:
         r["storage_gb"] = None
+    cap, free = _gb(dk.get("TotalDataCapacity")), _gb(
+        dk.get("TotalDataAvailable"))
+    if cap is not None and free is not None:
+        r["storage_free_gb"] = free
+        r["storage_used_gb"] = round(cap - free, 1)
     # battery charge
     rc, o, _ = run(["ideviceinfo", "-u", udid, "-q",
                     "com.apple.mobile.battery"], 15)
@@ -388,8 +493,15 @@ def ios_info(udid):
             if design and full:
                 r["battery_health_pct"] = min(100, round(100.0 * full /
                                                          design))
+                r["battery_design_mah"] = int(design)
+                r["battery_full_mah"] = int(full)
+            if reg.get("Temperature") is not None:
+                r["battery_temp_c"] = _num(reg.get("Temperature"), 100.0)
+            if reg.get("Voltage"):
+                r["battery_voltage"] = _num(reg.get("Voltage"), 1000.0, 2)
         except Exception:
             r["notes"].append("battery health not readable")
+    r["details"] = details_list(r)
     return r
 
 
@@ -580,46 +692,170 @@ def android_imei(ser):
     return ""
 
 
+# Amazon Fire model codes -> names (newer ones show their code)
+FIRE_NAMES = {
+    "KFTRWI": "Fire HD 10 (2021)", "KFTRPWI": "Fire HD 10 Plus (2021)",
+    "KFMAWI": "Fire HD 10 (2019)", "KFSUWI": "Fire HD 10 (2017)",
+    "KFTUWI": "Fire HD 10 (2023)", "KFONWI": "Fire HD 8 (2020)",
+    "KFRAWI": "Fire HD 8 (2022)", "KFRAPWI": "Fire HD 8 Plus (2022)",
+    "KFKAWI": "Fire HD 8 (2018)", "KFDOWI": "Fire HD 8 (2017)",
+    "KFMUWI": "Fire 7 (2019)", "KFQUWI": "Fire 7 (2022)",
+    "KFSNWI": "Fire Max 11 (2023)",
+}
+
+ANDROID_PROPS = {
+    "make": "ro.product.manufacturer", "brand": "ro.product.brand",
+    "marketname": "ro.product.marketname", "model_id": "ro.product.model",
+    "device_code": "ro.product.device", "release": "ro.build.version.release",
+    "build": "ro.build.display.id",
+    "security_patch": "ro.build.version.security_patch",
+    "serialno": "ro.serialno", "boot_serial": "ro.boot.serialno",
+    "crypto": "ro.crypto.state", "crypto_type": "ro.crypto.type",
+    "chars": "ro.build.characteristics", "baseband": "gsm.version.baseband",
+    "sim_state": "gsm.sim.state", "sim_op": "gsm.sim.operator.alpha",
+    "net_op": "gsm.operator.alpha", "csc": "ro.csc.sales_code",
+    "csc2": "ril.official_cscver", "vb_state": "ro.boot.verifiedbootstate",
+    "flash_locked": "ro.boot.flash.locked",
+    "vbmeta": "ro.boot.vbmeta.device_state",
+    "oem_unlock": "sys.oem_unlock_allowed", "soc": "ro.soc.model",
+    "soc_maker": "ro.soc.manufacturer", "platform": "ro.board.platform",
+    "hardware": "ro.hardware", "kg": "knox.kg.state",
+    "samsung_market": "ril.product_code",
+    "mkt_name2": "ro.vendor.oplus.market.name",
+    "fireos": "ro.build.version.fireos",
+    "mkt_name3": "ro.product.vendor.marketname",
+}
+
+
+def android_props(ser):
+    """All the getprop values at once (one adb call)."""
+    rc, o, _ = adb(ser, "shell", "getprop", timeout=20)
+    allp = {}
+    for m in re.finditer(r"^\[([^\]]+)\]: \[(.*)\]$", o, re.M):
+        allp[m.group(1)] = m.group(2)
+    return {k: allp.get(v, "").strip() for k, v in ANDROID_PROPS.items()}
+
+
 def android_info(ser):
     r = {"platform": "android", "id": ser, "notes": []}
     rc, o, e = adb(ser, "get-state")
     if o.strip() != "device":
-        r["error"] = "phone not ready over USB (%s)" % (o or e).strip()
+        r["error"] = "device not ready over USB (%s)" % (o or e).strip()
         return r
-    r["make"] = prop(ser, "ro.product.manufacturer").title() or "unknown"
-    chars = prop(ser, "ro.build.characteristics")
+    P = android_props(ser)
+    r["make"] = (P["make"] or P["brand"]).title() or "unknown"
     if r["make"].lower() == "amazon":
         r["kind"] = "Amazon Fire tablet"
-    elif "tablet" in chars:
+    elif "tablet" in P["chars"]:
         r["kind"] = "Android tablet"
     else:
         r["kind"] = "Android phone"
-    r["model"] = (prop(ser, "ro.product.marketname") or
-                  prop(ser, "ro.product.model") or "unknown")
-    r["model_id"] = prop(ser, "ro.product.model")
-    r["os"] = "Android %s" % (prop(ser, "ro.build.version.release") or "?")
-    r["serial"] = prop(ser, "ro.serialno") or ser
+    r["model"] = (P["marketname"] or P["mkt_name3"] or P["mkt_name2"] or
+                  FIRE_NAMES.get(P["model_id"], "") or "")
+    if not r["model"] and r["make"].lower() == "samsung":
+        # Samsung keeps the sales name as the default device name
+        rc, o, _ = adb(ser, "shell", "settings", "get", "global",
+                       "device_name")
+        if o.strip().startswith("Galaxy"):
+            r["model"] = o.strip()
+    r["model"] = r["model"] or P["model_id"] or "unknown"
+    r["model_id"] = P["model_id"]
+    r["device_code"] = P["device_code"]
+    r["os"] = "Android %s" % (P["release"] or "?")
+    if r["make"].lower() == "amazon":
+        r["os"] = ("Fire OS %s (Android %s)" % (P["fireos"], P["release"])
+                   if P["fireos"] else "Fire OS (Android %s)" % P["release"])
+    r["build"] = P["build"]
+    r["security_patch"] = P["security_patch"]
+    r["baseband"] = P["baseband"].split(",")[0]
+    r["csc"] = P["csc"] or P["samsung_market"]
+    r["serial"] = P["serialno"] or P["boot_serial"] or ser
     imei = android_imei(ser)
     r["imei"] = [imei] if imei else []
     if not imei:
         r["notes"].append("IMEI not readable over USB on this Android "
                           "version - dial *#06# and type it in")
-    r["encrypted"] = prop(ser, "ro.crypto.state") or "unknown"
-    r["encryption_type"] = prop(ser, "ro.crypto.type") or ""
-    rc, o, _ = adb(ser, "shell", "df", "/data")
-    m = re.search(r"\s(\d+)\s+\d+\s+\d+\s+\d+%", o)
-    r["storage_gb"] = round(int(m.group(1)) * 1024 / 1e9) if m else None
+    r["encrypted"] = P["crypto"] or "unknown"
+    r["encryption_type"] = P["crypto_type"]
+    if P["crypto_type"]:
+        r["encrypted"] += " (%s)" % P["crypto_type"]
+    r["chip"] = " ".join(x for x in (P["soc_maker"], P["soc"] or
+                                     P["platform"] or P["hardware"]) if x)
+    # bootloader / root
+    unlocked = P["vb_state"] in ("orange", "yellow") or \
+        P["flash_locked"] == "0" or P["vbmeta"] == "unlocked"
+    r["bootloader"] = ("UNLOCKED" if unlocked else "locked") + (
+        " (verified boot %s)" % P["vb_state"] if P["vb_state"] else "")
+    rc, o, _ = adb(ser, "shell", "command -v su || ls /system/xbin/su "
+                   "/system/bin/su /sbin/su 2>/dev/null")
+    r["rooted"] = bool(o.strip())
+    if unlocked or r["rooted"]:
+        r["notes"].append("bootloader unlocked or rooted - the system was "
+                          "modified")
+    r["oem_unlock_allowed"] = P["oem_unlock"]
+    r["knox_guard"] = P["kg"]
+    # SIM / carrier
+    sims = [x for x in P["sim_state"].split(",") if x]
+    if sims:
+        r["sim"] = "SIM inserted" if any(x in ("READY", "LOADED")
+                                         for x in sims) else \
+            ("No SIM" if all(x in ("ABSENT", "NOT_READY", "UNKNOWN")
+                             for x in sims) else ", ".join(sims))
+    r["carrier"] = (P["sim_op"].strip(",") or P["net_op"].strip(","))
+    # RAM
+    rc, o, _ = adb(ser, "shell", "cat", "/proc/meminfo")
+    m = re.search(r"MemTotal:\s+(\d+)", o)
+    if m:
+        kb = int(m.group(1))
+        # shown like the box: 3.7 GB -> 4 GB
+        r["ram_gb"] = min((x for x in (1, 1.5, 2, 3, 4, 6, 8, 12, 16, 18, 24,
+                                       32) if x * 1024 * 1024 >= kb * 0.85),
+                          default=round(kb / 1048576.0, 1))
+    # storage (size, used, free) of the user data area
+    rc, o, _ = adb(ser, "shell", "df", "-k", "/data")
+    m = re.search(r"\s(\d+)\s+(\d+)\s+(\d+)\s+\d+%", o)
+    if m:
+        tot, used, free = (int(m.group(i)) * 1024 for i in (1, 2, 3))
+        r["storage_used_gb"] = round(used / 1e9, 1)
+        r["storage_free_gb"] = round(free / 1e9, 1)
+        # sold size: the next 16/32/64/128... above the data area size
+        r["storage_gb"] = min((x for x in (8, 16, 32, 64, 128, 256, 512,
+                                           1024) if x * 1e9 >= tot),
+                              default=round(tot / 1e9))
+    else:
+        r["storage_gb"] = None
+    # screen
+    rc, o, _ = adb(ser, "shell", "wm", "size")
+    m = re.findall(r"(\d+x\d+)", o)
+    if m:
+        rc2, o2, _ = adb(ser, "shell", "wm", "density")
+        d = re.findall(r"(\d+)", o2)
+        r["screen"] = "%s pixels%s" % (m[-1], (", %s dpi" % d[-1]) if d
+                                       else "")
+    # Wi-Fi MAC (newer Android hides it: 02:00:00:00:00:00)
+    rc, o, _ = adb(ser, "shell", "cat", "/sys/class/net/wlan0/address")
+    mac = o.strip()
+    if re.fullmatch(r"[0-9a-fA-F:]{17}", mac) and not mac.startswith(
+            "02:00:00"):
+        r["wifi_mac"] = mac
+    # battery
     rc, o, _ = adb(ser, "shell", "dumpsys", "battery")
     bk = _kv(o)
     r["battery_level"] = bk.get("level", "")
     r["battery_charging"] = "true" if bk.get("status") == "2" else "false"
     r["battery_status"] = ANDROID_HEALTH.get(bk.get("health", ""), "unknown")
+    r["battery_temp_c"] = _num(bk.get("temperature"), 10.0)
+    r["battery_voltage"] = _num(bk.get("voltage"), 1000.0, 2)
+    r["battery_tech"] = bk.get("technology", "")
     r["battery_health_pct"] = None
     r["battery_cycles"] = None
+    for key in ("cycle count", "Cycle count", "cycle_count"):
+        if bk.get(key, "").isdigit():
+            r["battery_cycles"] = int(bk[key])
     for base in ("/sys/class/power_supply/battery",
                  "/sys/class/power_supply/bms"):
         rc, o, _ = adb(ser, "shell", "cat", base + "/cycle_count")
-        if rc == 0 and o.strip().isdigit():
+        if rc == 0 and o.strip().isdigit() and r["battery_cycles"] is None:
             r["battery_cycles"] = int(o.strip())
         rc1, full, _ = adb(ser, "shell", "cat", base + "/charge_full")
         rc2, des, _ = adb(ser, "shell", "cat", base + "/charge_full_design")
@@ -627,8 +863,17 @@ def android_info(ser):
                 des.strip().isdigit() and int(des) > 0:
             r["battery_health_pct"] = min(100, round(100.0 * int(full) /
                                                      int(des)))
+            r["battery_full_mah"] = int(full) // 1000
+            r["battery_design_mah"] = int(des) // 1000
         if r["battery_cycles"] is not None or r["battery_health_pct"]:
             break
+    # Android 14+: battery health % from the system (if the maker fills it)
+    if r["battery_health_pct"] is None:
+        rc, o, _ = adb(ser, "shell", "dumpsys", "batteryproperties")
+        m = re.search(r"(?:state of health|soh)\D{0,5}(\d{1,3})", o, re.I)
+        if m and 0 < int(m.group(1)) <= 100:
+            r["battery_health_pct"] = int(m.group(1))
+    r["details"] = details_list(r)
     return r
 
 
@@ -667,6 +912,21 @@ def android_checks(ser, info):
                        "how": "Settings > Accounts and backup > Manage "
                               "accounts > remove the Samsung account."})
     checks += brand_account_checks(info.get("make", ""), accs)
+    kg = (info.get("knox_guard") or "").strip()
+    if kg:
+        st = kg.lower()
+        if st in ("active", "locked", "blink", "prenormal", "checking"):
+            res = "BLOCKED"
+        elif st in ("completed", "none", "disabled"):
+            res = "CLEAR"
+        else:
+            res = "CHECK"
+        checks.append({"name": "Samsung Knox Guard (finance / company lock)",
+                       "result": res, "detail": "state: %s" % kg,
+                       "how": "The phone is locked by a finance company or "
+                              "business through Knox Guard. Only they can "
+                              "release it (Knox Guard portal)."
+                       if res != "CLEAR" else ""})
     rc, o, _ = adb(ser, "shell", "dpm", "list-owners")
     owners = [l.strip() for l in o.splitlines()
               if "owner" in l.lower() and "no owners" not in l.lower()]
