@@ -33,6 +33,37 @@ Phones are plugged into the station by USB cable.
    (same design as LaptopSeal) in the `reports` folder of the ITAD_DATA
    stick.
 
+### Which devices
+
+* **iPhone, iPad, iPod touch**: everything over USB (names for all models
+  from iPhone 6s / iPad 5th gen; newer models show their model code).
+* **Android phones and tablets, Amazon Fire**: over USB with USB debugging.
+  Brand locks checked too: Samsung, Amazon (registered Fire), Xiaomi Mi
+  account, HUAWEI / HONOR ID, OPPO / realme / OnePlus, vivo.
+* **Apple Watch and devices with no USB**: *Add a device by hand* on the
+  Job page. Details are typed in, checks are confirmed by the technician,
+  tests can still run in the device's browser if it has one.
+
+### Passcode unknown (locked devices)
+
+Press **Passcode unknown** on the device's row. The station shows it even
+when it is locked, in recovery / DFU mode, in bootloader mode, or has USB
+debugging off.
+
+1. Device details: type the serial / IMEI.
+2. Wipe:
+   * iPhone / iPad: the station shows how to put it in **recovery mode**,
+     finds it, and erase-restores iOS (downloads iOS from Apple: needs
+     internet and 6-9 GB free on USB B), or restore on another computer.
+   * Android / Fire: step-by-step **recovery menu** buttons for the brand
+     (Samsung, Pixel, Motorola, Xiaomi, OnePlus, HUAWEI, Fire...).
+3. Lock checks **on the setup screen after the wipe** (Activation Lock,
+   Remote Management, Google FRP "Verify your account", brand accounts,
+   "This device belongs to your organisation"). A lock found = removal
+   request saved for the customer.
+4. Report: tests show **NOT TESTED - passcode unknown**; a wiped,
+   lock-free device gets the result **WIPED - NOT TESTED**.
+
 Order is **checks, tests, wipe, report**: after the wipe the phone is back on
 the setup screen and cannot open the test page.
 

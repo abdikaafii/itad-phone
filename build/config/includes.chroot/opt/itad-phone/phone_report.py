@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-phone_report.py - PhoneSeal result and signed PDF certificate (v0.1.0)
+phone_report.py - PhoneSeal result and signed PDF certificate (v0.2.0)
 
 Same look as the LaptopSeal certificate: dark-blue ITAD header, result
 badge, QR code + Ed25519 signature on page 1, coloured results.
@@ -10,8 +10,9 @@ import os
 
 from itad_common import sign_report
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 NOT_FITTED = "N/A"
+NOT_TESTED = "NOT TESTED"      # passcode unknown
 
 
 def compute_overall(rep):
@@ -37,14 +38,21 @@ def compute_overall(rep):
     if w.get("state") != "WIPED":
         reasons.append("Wipe not done (%s)" % (w.get("state") or
                                                "not started").lower())
+    nt = [t for t in rep.get("tests", []) if t.get("status") == NOT_TESTED]
     for t in rep.get("tests", []):
-        if t.get("status") not in ("PASS", NOT_FITTED):
+        if t.get("status") not in ("PASS", NOT_FITTED, NOT_TESTED):
             notes = " ".join(t.get("notes") or [])
             reasons.append("%s %s" % (t["component"], "not tested" if
                                       "Not tested" in notes or not notes
                                       else "needs attention: " + notes[:60]))
     if rep.get("test_mode"):
         reasons.insert(0, "TEST MODE - not for customer devices")
+    if nt:
+        why = "%d component tests not done - passcode unknown" % len(nt)
+        if not reasons:
+            # wiped and lock-free, but could not be tested
+            return "WIPED - NOT TESTED", [why]
+        reasons.append(why)
     return ("INCOMPLETE" if reasons else "PASS"), reasons
 
 
@@ -134,10 +142,10 @@ def write_pdf(path, rep):
     SOFT = colors.HexColor("#F3F6FB")
     BG = {"PASS": "#DDF5EA", "CLEAR": "#DDF5EA", "FAIL": "#FBE1E1",
           "BLOCKED": "#FBE1E1", "CHECK": "#FFF3D1", "WARN": "#FFF3D1",
-          NOT_FITTED: "#ECEFF4"}
+          NOT_FITTED: "#ECEFF4", NOT_TESTED: "#ECEFF4"}
     FG = {"PASS": "#13774D", "CLEAR": "#13774D", "FAIL": "#B3261E",
           "BLOCKED": "#B3261E", "CHECK": "#8A5A00", "WARN": "#8A5A00",
-          NOT_FITTED: "#5B6B84"}
+          NOT_FITTED: "#5B6B84", NOT_TESTED: "#5B6B84"}
     RC = {"PASS": "#1FA971", "FAIL": "#C62F2F"}.get(rep["overall"], "#D9A21B")
     integ = rep.get("integrity") or {}
     d = rep["device"]
@@ -303,7 +311,8 @@ def write_pdf(path, rep):
                      "read (cryptographic erase, NIST SP 800-88).", s_small),
            Spacer(1, 5 * mm)]
     tests = rep["tests"]
-    fitted = [t for t in tests if t["status"] != NOT_FITTED]
+    fitted = [t for t in tests if t["status"] not in (NOT_FITTED,
+                                                      NOT_TESTED)]
     good = sum(1 for t in fitted if t["status"] == "PASS")
     el += [Paragraph("Component tests  -  %d of %d passed" % (good,
                                                              len(fitted)),
@@ -336,26 +345,54 @@ def write_pdf(path, rep):
     doc.build(el, onFirstPage=deco, onLaterPages=deco)
 
 
-def save_all(rep, out_dir, persistent, log_lines=()):
-    """Sign, then write TXT, JSON and PDF into out_dir/reports."""
-    rdir = os.path.join(out_dir, "reports")
-    os.makedirs(rdir, exist_ok=True)
+def save_all(rep, out_dir, persistent, log_lines=(), errors=None):
+    """Sign, then write TXT, JSON, PDF and log into out_dir/reports.
+    Always saves, whatever the result. If the stick can't be written it
+    tries its top folder, then memory; errors gets the real reasons."""
+    errors = errors if errors is not None else []
     d = rep["device"]
     key = (d.get("imei") or [""])[0] or d.get("serial") or rep["asset_id"]
-    base = os.path.join(rdir, "PHONE_%s_%s" % (
+    name = "PHONE_%s_%s" % (
         "".join(c for c in key if c.isalnum()) or "UNKNOWN",
-        rep["finished"].replace("-", "").replace(":", "").replace(" ", "-")))
-    sign_report(rep, out_dir, persistent)
-    saved = []
-    for ext, fn in (("txt", lambda p: open(p, "w").write(render_txt(rep))),
-                    ("json", lambda p: json.dump(rep, open(p, "w"),
-                                                 indent=2)),
-                    ("pdf", lambda p: write_pdf(p, rep)),
-                    ("log", lambda p: open(p, "w").write(
-                        "\n".join(log_lines) + "\n"))):
+        rep["finished"].replace("-", "").replace(":", "").replace(" ", "-"))
+    try:
+        sign_report(rep, out_dir, persistent)
+    except Exception as e:
+        errors.append("signing: %s" % e)
+        rep.setdefault("integrity", {"signed": False,
+                                     "note": "signing failed: %s" % e})
+
+    def wtxt(p, text):
+        with open(p, "w") as f:
+            f.write(text)
+
+    def wjson(p):
+        with open(p, "w") as f:
+            json.dump(rep, f, indent=2, default=str)
+
+    for rdir in (os.path.join(out_dir, "reports"), out_dir,
+                 "/tmp/itad-reports"):
         try:
-            fn(base + "." + ext)
-            saved.append(base + "." + ext)
-        except Exception:
-            pass
-    return saved
+            os.makedirs(rdir, exist_ok=True)
+        except Exception as e:
+            errors.append("%s: %s" % (rdir, e))
+            continue
+        base = os.path.join(rdir, name)
+        saved = []
+        for ext, fn in (("txt", lambda p: wtxt(p, render_txt(rep))),
+                        ("json", wjson),
+                        ("pdf", lambda p: write_pdf(p, rep)),
+                        ("log", lambda p: wtxt(p, "\n".join(log_lines) +
+                                               "\n"))):
+            try:
+                fn(base + "." + ext)
+                saved.append(base + "." + ext)
+            except Exception as e:
+                errors.append("%s %s: %s" % (ext.upper(), rdir, e))
+        if any(x.endswith((".txt", ".pdf")) for x in saved):
+            try:
+                os.sync()
+            except Exception:
+                pass
+            return saved
+    return []

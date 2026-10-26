@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-phone_window.py - ITAD PhoneSeal station window (v0.1.0)
+phone_window.py - ITAD PhoneSeal station window (v0.2.0)
 
 One phone at a time, in this order (phones must be tested BEFORE the wipe:
 after the wipe the phone is back on the Hello / Welcome screen):
@@ -11,6 +11,11 @@ after the wipe the phone is back on the Hello / Welcome screen):
   4 Tests        the phone scans a QR code and runs the tests in its browser
   5 Wipe         erase, then the station checks the phone is on Hello
   6 Report       grade, notes, signed PDF certificate on the ITAD_DATA stick
+
+Locked devices (passcode unknown) and devices without USB (Apple Watch...):
+  Job + device > Device details > Wipe > lock checks on the setup screen
+  AFTER the wipe > Report. Tests are reported "not tested - passcode
+  unknown".
 
 Run:  sudo python3 phone_window.py      (--windowed for a normal window)
 """
@@ -26,7 +31,7 @@ import phone_core as core
 import phone_report as rpt
 from test_server import TestServer, qr_png
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 BG, BG2, SIDE = "#050F22", "#081831", "#061430"
@@ -37,7 +42,7 @@ TEXT, MUTED, DIM = "#EAF2FF", "#8EA6C8", "#4F6A92"
 OK, BAD, WARN = "#34D399", "#F87171", "#FBBF24"
 OKD, BADD = "#1FA971", "#C62F2F"
 FONT = "DejaVu Sans"
-STEPS = [("login", "Sign in"), ("job", "Job + phone"), ("checks", "Lock checks"),
+STEPS = [("login", "Sign in"), ("job", "Job + device"), ("checks", "Lock checks"),
          ("tests", "Tests"), ("wipe", "Wipe"), ("report", "Report")]
 WEB_TESTS = ["Touch screen", "Multi-touch", "Display", "Speakers",
              "Microphone", "Front camera", "Rear camera", "Vibration",
@@ -45,6 +50,8 @@ WEB_TESTS = ["Touch screen", "Multi-touch", "Display", "Speakers",
 GRADES = ["A - like new", "B - light wear", "C - visible wear",
           "D - heavy wear / damage"]
 LOCATIONS = ["Dublin", "Bench 1", "Bench 2", "Bench 3", "Other"]
+NOT_TESTED = "NOT TESTED"
+PASSCODE_NOTE = "not tested - passcode unknown"
 
 
 class App:
@@ -283,13 +290,13 @@ class App:
         self.s = {"job_id": "JOB-" + C.now().strftime("%Y%m%d-%H%M%S"),
                   "asset_id": "", "location": LOCATIONS[0], "phone": None,
                   "info": {}, "checks": [], "tests": {}, "wipe": {},
-                  "started": None}
+                  "started": None, "locked": False}
         self.polling = False
 
     def show_job(self):
         tk = self.tk
-        self.page("job", "Job and phone", "Enter the job, then plug the "
-                  "phone into the station with a USB cable.")
+        self.page("job", "Job and device", "Enter the job, then plug the "
+                  "phone or tablet into the station with a USB cable.")
         row = tk.Frame(self.content, bg=BG)
         row.pack(fill="x")
         self.v_job = tk.StringVar(value=self.s["job_id"])
@@ -305,14 +312,18 @@ class App:
         self.lbl(c, "LOCATION", 10, True, fg=MUTED).pack(anchor="w")
         self.ttk.Combobox(c, textvariable=self.v_loc, values=LOCATIONS,
                           font=self.F(13), width=16).pack(anchor="w")
-        f, c = self.card(self.content, "Phones on this station")
+        f, c = self.card(self.content, "Phones and tablets on this station")
         f.pack(fill="both", expand=True, pady=(self.px(14), 0))
         self.ph_list = tk.Frame(c, bg=CARD)
         self.ph_list.pack(fill="both", expand=True)
-        self.lbl(c, "iPhone: unlock it and tap 'Trust This Computer'.   "
-                 "Android: Settings > Developer options > USB debugging ON, "
-                 "then tap 'Allow'.", 11, fg=MUTED, wraplength=1100).pack(
-            anchor="w", pady=(self.px(8), 0))
+        self.lbl(c, "iPhone / iPad: unlock it and tap 'Trust This "
+                 "Computer'.   Android: Settings > Developer options > USB "
+                 "debugging ON, then tap 'Allow'.   Passcode unknown? Use "
+                 "'Passcode unknown' on its row.", 11, fg=MUTED,
+                 wraplength=1100).pack(anchor="w", pady=(self.px(8), 0))
+        self.btn(c, "Add a device by hand (no USB: Apple Watch, other)",
+                 self.add_manual, "ghost").pack(anchor="w",
+                                                pady=(self.px(8), 0))
         self.btn(self.bar_right, "Sign out", self.sign_out, "ghost").pack(
             side="left", padx=6)
         self.polling = True
@@ -338,8 +349,8 @@ class App:
         for w in self.ph_list.winfo_children():
             w.destroy()
         if not phones:
-            self.lbl(self.ph_list, "Waiting for a phone... plug it in with "
-                     "a USB cable.", 14, fg=MUTED).pack(anchor="w",
+            self.lbl(self.ph_list, "Waiting for a device... plug it in "
+                     "with a USB cable.", 14, fg=MUTED).pack(anchor="w",
                                                          pady=self.px(10))
         for p in phones:
             r = self.tk.Frame(self.ph_list, bg=CARD2,
@@ -350,8 +361,12 @@ class App:
                                                     pady=self.px(10))
             self.lbl(r, p["id"][:28], 10, fg=MUTED).pack(side="left")
             hint = {"ready": ("Ready", OK),
-                    "trust": ("Tap Trust / Allow on the phone", WARN),
-                    "locked": ("Unlock the phone, then tap Trust", WARN),
+                    "trust": ("Tap Trust / Allow on the device", WARN),
+                    "locked": ("Unlock it, then tap Trust", WARN),
+                    "recovery": ("Recovery mode - ready to erase", WARN),
+                    "dfu": ("DFU mode - ready to erase", WARN),
+                    "fastboot": ("Bootloader mode", WARN),
+                    "nodebug": ("USB debugging off or screen locked", WARN),
                     "offline": ("Offline - reconnect the cable", BAD)}.get(
                 p["state"], (p["state"], WARN))
             self.lbl(r, hint[0], 12, True, fg=hint[1]).pack(
@@ -360,13 +375,24 @@ class App:
                 self.btn(r, "Use this phone",
                          lambda p=p: self.pick_phone(p)).pack(
                     side="right", padx=self.px(10), pady=6)
-            elif p["platform"] == "ios":
+            if p["state"] != "ready" and p["state"] != "offline":
+                self.btn(r, "Passcode unknown",
+                         lambda p=p: self.pick_phone(p, locked=True),
+                         "danger").pack(side="right", padx=self.px(10),
+                                        pady=6)
+            if p["platform"] == "ios" and p["state"] in ("trust", "locked"):
                 self.btn(r, "Ask to trust", lambda p=p: self.bg(
                     lambda: core.pair_ios(p["id"]), lambda r: None),
                     "ghost").pack(side="right", padx=self.px(10), pady=6)
         self.root.after(2500, self.poll_phones)
 
-    def pick_phone(self, p):
+    def add_manual(self):
+        self.pick_phone({"platform": "manual", "id": "manual",
+                         "state": "manual", "label": "Device added by hand"},
+                        locked=None)
+
+    def pick_phone(self, p, locked=False):
+        """locked: True = passcode unknown, None = added by hand (ask)."""
         if not self.v_job.get().strip() or not self.v_asset.get().strip():
             self.set_status("Job ID and Asset ID are needed.", WARN)
             return
@@ -375,9 +401,120 @@ class App:
                       asset_id=self.v_asset.get().strip(),
                       location=self.v_loc.get().strip(), phone=p,
                       started=C.now())
-        self.say("job %s asset %s phone %s %s" % (
-            self.s["job_id"], self.s["asset_id"], p["platform"], p["id"]))
-        self.show_checks()
+        self.say("job %s asset %s device %s %s %s" % (
+            self.s["job_id"], self.s["asset_id"], p["platform"], p["id"],
+            "PASSCODE UNKNOWN" if locked else
+            "added by hand" if locked is None else ""))
+        if locked or locked is None:
+            self.s["locked"] = bool(locked)
+            self.s["manual"] = locked is None
+            self.show_device_form()
+        else:
+            self.show_checks()
+
+    # ---------- device details (locked device / added by hand) ----------
+    def show_device_form(self):
+        tk = self.tk
+        p = self.s["phone"]
+        info = self.s["info"] or core.locked_info(p)
+        self.s["info"] = info
+        manual = self.s.get("manual")
+        self.page("checks", "Device details",
+                  "Type what is on the device, its box or SIM tray (IMEI: "
+                  "dial *#06# or look on the SIM tray / back).")
+        f, c = self.card(self.content)
+        f.pack(fill="x")
+        grid = tk.Frame(c, bg=CARD)
+        grid.pack(anchor="w")
+        self.v_kind = tk.StringVar(value=info.get("kind") if info.get("kind")
+                                   in core.KINDS else
+                                   ("iPhone" if p["platform"] == "ios" else
+                                    "Android phone" if p["platform"] ==
+                                    "android" else "Apple Watch"))
+        self.f_vars = {}
+        fields = [("make", "MAKE"), ("model", "MODEL"), ("serial", "SERIAL"),
+                  ("imei", "IMEI"), ("colour", "COLOUR"), ("os", "OS VERSION")]
+        self.lbl(grid, "TYPE", 10, True, fg=MUTED).grid(row=0, column=0,
+                                                        sticky="w")
+        self.ttk.Combobox(grid, textvariable=self.v_kind, values=core.KINDS,
+                          state="readonly", font=self.F(13), width=22).grid(
+            row=1, column=0, sticky="w", padx=(0, self.px(14)),
+            pady=(0, self.px(10)))
+        for i, (k, lab) in enumerate(fields, start=1):
+            v = info.get(k) or ""
+            if isinstance(v, list):
+                v = ", ".join(v)
+            var = tk.StringVar(value=v)
+            self.f_vars[k] = var
+            r, col = (i // 4) * 2, i % 4
+            self.lbl(grid, lab, 10, True, fg=MUTED).grid(row=r, column=col,
+                                                         sticky="w")
+            self.entry(grid, var, width=22).grid(
+                row=r + 1, column=col, sticky="w", padx=(0, self.px(14)),
+                pady=(0, self.px(10)), ipady=self.px(4))
+        self.v_known = tk.StringVar(value="yes" if manual and not
+                                    self.s.get("locked") else "no")
+        if manual:
+            f2, c2 = self.card(self.content, "Passcode")
+            f2.pack(fill="x", pady=(self.px(12), 0))
+            for val, txt in (("yes", "I can unlock it - check its Settings "
+                              "and run the tests"),
+                             ("no", "Passcode unknown - wipe it, then check "
+                              "the setup screen (no tests)")):
+                tk.Radiobutton(c2, text=txt, variable=self.v_known,
+                               value=val, font=self.F(12), fg=TEXT, bg=CARD,
+                               selectcolor=CARD2, activebackground=CARD,
+                               activeforeground=TEXT, anchor="w").pack(
+                    anchor="w")
+        else:
+            self.lbl(self.content, "Passcode unknown: the device can't be "
+                     "tested. It is wiped first, then its locks are checked "
+                     "on the setup screen. The report says 'not tested - "
+                     "passcode unknown'.", 12, fg=WARN,
+                     wraplength=1100).pack(anchor="w", pady=self.px(12))
+        self.btn(self.bar_right, "Back", self.back_to_job, "ghost").pack(
+            side="left", padx=6)
+        self.btn(self.bar_right, "Continue", self.device_form_done).pack(
+            side="left", padx=6)
+
+    def back_to_job(self):
+        self.s["info"] = {}
+        self.s["locked"] = False
+        self.s["manual"] = False
+        self.show_job()
+
+    def device_form_done(self):
+        info = self.s["info"]
+        info["kind"] = self.v_kind.get()
+        for k, var in self.f_vars.items():
+            v = var.get().strip()
+            info[k] = [x.strip() for x in v.split(",") if x.strip()] \
+                if k == "imei" else v
+        if not info.get("make") and core.kind_platform(info["kind"]) == "ios":
+            info["make"] = "Apple"
+        if not (info.get("serial") or info.get("imei")):
+            self.set_status("Type the serial number or the IMEI.", WARN)
+            return
+        known = self.v_known.get() == "yes"
+        self.s["locked"] = not known
+        info["passcode_known"] = known
+        p = self.s["phone"]
+        if p["platform"] == "manual":
+            p["platform"] = core.kind_platform(info["kind"])
+            p["usb"] = False
+        self.v_imei = self.tk.StringVar(value=", ".join(info.get("imei")
+                                                        or []))
+        self.say("device details: %s" % {k: info.get(k) for k in (
+            "kind", "make", "model", "serial", "imei")})
+        if known:
+            self.s["checks"] = core.manual_checks(info["kind"])
+            self.draw_checks()
+        else:
+            self.s["checks"] = core.locked_checks(info["kind"])
+            for n in WEB_TESTS + ["Battery health", "Charging"]:
+                self.s["tests"][n] = {"status": NOT_TESTED,
+                                      "note": PASSCODE_NOTE, "auto": True}
+            self.show_wipe()
 
     # ---------- 3. lock checks ----------
     def show_checks(self):
@@ -399,8 +536,13 @@ class App:
 
     def draw_checks(self):
         tk = self.tk
-        self.page("checks", "Lock checks", "The phone must be free of the "
-                  "customer's locks before it is wiped.")
+        if self.s.get("locked") and self.s["wipe"]:
+            self.page("checks", "Lock checks on the setup screen",
+                      "The device was wiped. Switch it on and go through the "
+                      "first setup screens: confirm what it asks for.")
+        else:
+            self.page("checks", "Lock checks", "The device must be free of "
+                      "the customer's locks before it is wiped.")
         info = self.s["info"]
         if info.get("error"):
             self.lbl(self.content, info["error"], 14, fg=BAD,
@@ -412,7 +554,8 @@ class App:
         f, c = self.card(row, "Phone")
         f.pack(side="left", fill="y", padx=(0, self.px(14)))
         self.v_imei = tk.StringVar(value=", ".join(info.get("imei") or []))
-        for k, v in (("Make / model", "%s %s" % (info.get("make", ""),
+        for k, v in (("Type", info.get("kind", "")),
+                     ("Make / model", "%s %s" % (info.get("make", ""),
                                                  info.get("model", ""))),
                      ("Serial", info.get("serial")), ("OS", info.get("os")),
                      ("Storage", "%s GB" % (info.get("storage_gb") or "?")),
@@ -453,19 +596,48 @@ class App:
             else:
                 tk.Frame(r, bg=CARD2, height=self.px(8)).pack()
         overall = core.overall_check(self.s["checks"])
+        if self.s.get("locked") or self.s.get("manual"):
+            self.after_wipe_buttons(overall)
+            return
         self.btn(self.bar_right, "Read again", self.show_checks,
                  "ghost").pack(side="left", padx=6)
         if overall == "BLOCKED":
             path = self.removal_request()
             self.set_status("LOCKED - do not wipe. Removal request saved: %s"
                             % (path or "(could not save)"), BAD)
-            self.btn(self.bar_right, "Next phone", self.next_phone,
+            self.btn(self.bar_right, "Next device", self.next_phone,
                      "ghost").pack(side="left", padx=6)
         elif overall == "CHECK BY HAND":
-            self.set_status("Check the yellow items on the phone, then "
+            self.set_status("Check the yellow items on the device, then "
                             "confirm each one.", WARN)
         else:
             self.set_status("All clear.", OK)
+            self.btn(self.bar_right, "Continue to tests",
+                     self.show_tests).pack(side="left", padx=6)
+
+    def after_wipe_buttons(self, overall):
+        """Locked / hand-added devices: checks are confirmed by the
+        technician (locked: on the setup screen after the wipe)."""
+        wiped = bool(self.s["wipe"])
+        if overall == "BLOCKED":
+            path = self.removal_request()
+            self.set_status("LOCKED - removal request saved: %s" % (
+                path or "(could not save)"), BAD)
+        elif overall == "CHECK BY HAND":
+            self.set_status(("Look at the setup screen and confirm each "
+                             "item." if wiped else "Check each item in the "
+                             "device's Settings and confirm it."), WARN)
+        else:
+            self.set_status("All clear.", OK)
+        if overall == "CHECK BY HAND":
+            return
+        if wiped:
+            self.btn(self.bar_right, "Continue to report",
+                     self.show_report).pack(side="left", padx=6)
+        elif overall == "BLOCKED":
+            self.btn(self.bar_right, "Next device", self.next_phone,
+                     "ghost").pack(side="left", padx=6)
+        else:
             self.btn(self.bar_right, "Continue to tests",
                      self.show_tests).pack(side="left", padx=6)
 
@@ -473,8 +645,11 @@ class App:
         ch = self.s["checks"][i]
         ch["result"] = result
         ch["confirmed_by"] = self.tech
-        ch["detail"] = (ch.get("detail", "") + " - checked by hand: " +
-                        ("no lock" if result == "CLEAR" else "LOCKED"))
+        ch["detail"] = (ch.get("detail", "") + " - checked by hand" +
+                        (" on the setup screen after the wipe"
+                         if self.s.get("locked") and self.s["wipe"] else "") +
+                        ": " + ("no lock" if result == "CLEAR" else
+                                "LOCKED"))
         self.say("%s confirmed %s by %s" % (ch["name"], result, self.tech))
         self.draw_checks()
 
@@ -572,6 +747,11 @@ class App:
 
     def station_results(self):
         info, t = self.s["info"], self.s["tests"]
+        if self.s["phone"].get("usb") is False:
+            for n in ("Battery health", "Charging"):
+                t.setdefault(n, {"status": "CHECK", "note": "no USB - check "
+                                 "in Settings > Battery and tap to set",
+                                 "auto": True})
         h = info.get("battery_health_pct")
         if "Battery health" not in t:
             if h is None:
@@ -608,8 +788,8 @@ class App:
             st = r["status"] if r else "waiting"
             if r and st in ("PASS", "FAIL", "N/A"):
                 done += 1
-            col = {"PASS": OK, "FAIL": BAD, "N/A": MUTED, "waiting": DIM}.get(
-                st, WARN)
+            col = {"PASS": OK, "FAIL": BAD, "N/A": MUTED, "waiting": DIM,
+                   NOT_TESTED: MUTED}.get(st, WARN)
             fr = self.tk.Frame(self.res_box, bg=CARD2)
             fr.grid(row=i // 2, column=i % 2, sticky="ew", padx=4, pady=3)
             self.lbl(fr, n, 12, True).pack(side="left", padx=self.px(10),
@@ -671,13 +851,9 @@ class App:
                   "keys and the data cannot be read.")
         f, c = self.card(self.content, "Method")
         f.pack(fill="x")
-        if p["platform"] == "ios":
-            methods = core.ios_wipe_methods()
-        else:
-            methods = [("recovery", "Factory reset in recovery (the "
-                                    "station restarts the phone into "
-                                    "recovery; you choose 'Wipe data / "
-                                    "factory reset')")]
+        methods = core.wipe_methods(p, info, self.s.get("locked") or
+                                    p.get("usb") is False)
+        self.w_methods = dict(methods)
         self.v_method = tk.StringVar(value=methods[0][0])
         for k, txt in methods:
             tk.Radiobutton(c, text=txt, variable=self.v_method, value=k,
@@ -686,8 +862,29 @@ class App:
                            activeforeground=TEXT, anchor="w",
                            wraplength=self.px(1000), justify="left").pack(
                 anchor="w", pady=2)
-        if p["platform"] == "android" and str(info.get("encrypted")) != \
-                "encrypted":
+        if any(k == "to_recovery" for k, _ in methods):
+            self.lbl(c, "Passcode unknown: put it in recovery mode with the "
+                     "cable in this station.\n" + core.ios_recovery_steps(
+                         info.get("kind", ""), info.get("model", "")), 11,
+                     fg=WARN, wraplength=1000).pack(anchor="w", pady=4)
+            self.btn(c, "It shows the recovery screen - find it",
+                     self.find_recovery, "ghost").pack(anchor="w", pady=4)
+        elif any(k in ("guided", "manual", "manual_restore", "settings")
+                 for k, _ in methods):
+            self.lbl(c, core.manual_wipe_steps(methods[0][0], p, info), 11,
+                     fg=WARN, wraplength=1000).pack(anchor="w", pady=4)
+        if any(k in ("restore", "restore_recovery") for k, _ in methods):
+            wd, free = core.ipsw_workdir([os.path.join(self.out_dir,
+                                                       "ios-downloads")])
+            self.ipsw_dir = wd
+            self.lbl(c, "iOS download folder: %s (%s GB free%s)" % (
+                wd, free, "" if free >= 9 else " - may be too small: use a "
+                "bigger USB B or restore on another computer"), 10,
+                fg=MUTED if free >= 9 else WARN, wraplength=1000).pack(
+                anchor="w", pady=2)
+        if p["platform"] == "android" and str(info.get("encrypted")) not in \
+                ("encrypted", "", "None") and not self.s.get("locked") and \
+                p.get("usb") is not False:
             self.lbl(c, "Warning: the phone does not report encryption "
                      "(%s). Ask a manager before resetting." %
                      info.get("encrypted"), 11, fg=WARN,
@@ -695,6 +892,7 @@ class App:
         f, c = self.card(self.content, "Confirm")
         f.pack(fill="x", pady=self.px(12))
         ident = (info.get("imei") or [""])[0] or info.get("serial") or "WIPE"
+        ident = ident.strip() or "WIPE"
         self.need = ident[-4:].upper()
         self.lbl(c, "Type the last 4 characters of %s to allow the wipe:" %
                  ident, 12, fg=WARN).pack(anchor="w")
@@ -709,6 +907,30 @@ class App:
         self.btn(self.bar_right, "Skip wipe (report: NOT wiped)",
                  self.skip_wipe, "ghost").pack(side="left", padx=6)
 
+    def find_recovery(self):
+        """The locked iPhone / iPad was put in recovery mode: pick it up."""
+        def done(phones):
+            if isinstance(phones, Exception):
+                phones = []
+            rec = [x for x in phones if x["state"] in ("recovery", "dfu")]
+            if not rec:
+                self.set_status("No device in recovery mode yet - follow "
+                                "the steps, keep the cable in.", WARN)
+                return
+            p = rec[0]
+            self.s["phone"] = p
+            info = self.s["info"]
+            if p.get("serial") and not info.get("serial"):
+                info["serial"] = p["serial"]
+            if p.get("product") and not info.get("model_id"):
+                info["model_id"] = p["product"]
+                info["model"] = info.get("model") or core.apple_name(
+                    p["product"])
+            self.say("found in %s mode: %s" % (p["state"], p.get("label")))
+            self.show_wipe()
+        self.set_status("Looking for the device in recovery mode...")
+        self.bg(core.list_phones, done)
+
     def skip_wipe(self):
         self.s["wipe"] = {"state": "NOT WIPED", "method": "-",
                           "verify_note": "skipped by %s" % self.tech}
@@ -719,6 +941,9 @@ class App:
             self.set_status("The 4 characters do not match.", WARN)
             return
         p, m = self.s["phone"], self.v_method.get()
+        if m == "to_recovery":
+            self.find_recovery()
+            return
         self.w_go.configure(state="disabled")
         self.s["wipe"] = {"state": "RUNNING", "started":
                           C.now().strftime("%H:%M:%S")}
@@ -726,9 +951,15 @@ class App:
         self.say("wipe start %s %s" % (p["platform"], m))
         self.w_msg.configure(text="Working... do not unplug the phone.",
                              fg=CYAN)
-        if p["platform"] == "ios":
-            self.bg(lambda: core.ios_wipe(p["id"], m, log=self.say),
-                    self.wipe_started)
+        info = self.s["info"]
+        if m in ("manual", "manual_restore", "guided", "settings"):
+            self.wipe_started({"ok": None, "method": self.w_methods.get(
+                m, m), "steps": core.manual_wipe_steps(m, p, info)})
+        elif p["platform"] == "ios":
+            wd = getattr(self, "ipsw_dir", None)
+            self.bg(lambda: core.ios_wipe(p["id"], m, log=self.say,
+                                          ecid=p.get("ecid", ""),
+                                          workdir=wd), self.wipe_started)
         else:
             self.bg(lambda: core.android_wipe(p["id"], log=self.say),
                     self.wipe_started)
@@ -745,18 +976,18 @@ class App:
             return
         if res.get("ok") is True and p["platform"] == "ios":
             self.w_msg.configure(text="Erase started - waiting for the "
-                                 "phone to restart on the Hello screen...")
-            self.bg(lambda: core.ios_verify_wiped(p["id"], 900,
-                                                  log=self.say),
+                                 "device to restart on the Hello screen...")
+            udid = None if p["state"] in ("recovery", "dfu") else p["id"]
+            serial = self.s["info"].get("serial", "")
+            self.bg(lambda: core.ios_verify_wiped(udid, 900, log=self.say,
+                                                  serial=serial),
                     lambda r: self.wipe_done(
                         "WIPED" if r[0] else "FAILED", r[1]))
             return
         # technician step (manual iPhone erase, Android recovery)
-        txt = ("On the phone: Settings > General > Transfer or Reset "
-               "iPhone > Erase All Content and Settings." if p["platform"]
-               == "ios" else "On the phone (recovery menu): use the volume "
-               "keys to choose 'Wipe data / factory reset', press Power, "
-               "confirm, then 'Reboot system now'.")
+        txt = res.get("steps") or core.manual_wipe_steps(
+            "manual" if p["platform"] == "ios" else "recovery", p,
+            self.s["info"])
         self.w_msg.configure(text=txt + "\nWhen the phone shows the Hello / "
                              "Welcome setup screen, press the green button.",
                              fg=WARN)
@@ -774,6 +1005,10 @@ class App:
                  finished=C.now().strftime("%H:%M:%S"),
                  duration=C.fmt_dur(self.wipe_t0, C.now()))
         self.say("wipe %s: %s" % (state, note))
+        if self.s.get("locked") and state == "WIPED":
+            # locks of a locked device are only visible on the setup screen
+            self.draw_checks()
+            return
         self.show_report()
 
     # ---------- 6. report ----------
@@ -809,6 +1044,8 @@ class App:
                 st = r["status"]
                 if st in ("SKIP", "CHECK"):
                     st = "WARN"
+                if st == NOT_TESTED and not r.get("note"):
+                    r["note"] = PASSCODE_NOTE
                 tests.append({"component": n, "status": st,
                               "notes": [r.get("note", "")]})
         fin = C.now()
@@ -822,13 +1059,16 @@ class App:
                "checks": s["checks"], "wipe": s["wipe"], "tests": tests,
                "observations": {"grade": self.v_grade.get(),
                                 "notes": self.v_notes.get().strip()},
+               "passcode_unknown": bool(s.get("locked")),
                "test_mode": False}
         rep["overall"], rep["reasons"] = rpt.compute_overall(rep)
         return rep
 
     def save_report(self):
         rep = self.build_rep()
-        saved = rpt.save_all(rep, self.out_dir, self.persistent, self.log)
+        errs = []
+        saved = rpt.save_all(rep, self.out_dir, self.persistent, self.log,
+                             errs)
         for w in self.r_box.winfo_children():
             w.destroy()
         col = {"PASS": OKD, "FAIL": BADD}.get(rep["overall"], "#B7791F")
@@ -841,16 +1081,18 @@ class App:
         self.lbl(self.r_box, ("Saved and digitally signed: %s" % pdf[0])
                  if pdf and (rep.get("integrity") or {}).get("signed") else
                  ("Saved (NOT signed): %s" % (pdf[0] if pdf else saved))
-                 if saved else "Report NOT saved", 11,
+                 if saved else "Report NOT saved - %s" % (
+                     errs[-1] if errs else "unknown error"), 11,
                  fg=OK if pdf else BAD, wraplength=1100).pack(
             anchor="w", pady=self.px(8))
-        if not self.persistent:
+        if not self.persistent or (saved and saved[0].startswith("/tmp")):
             self.lbl(self.r_box, "No USB stick: the report is only in "
-                     "memory and is lost at power off.", 11, fg=BAD).pack(
-                anchor="w")
+                     "memory and is lost at power off. %s" % (
+                         errs[-1] if errs else ""), 11, fg=BAD,
+                     wraplength=1100).pack(anchor="w")
         for w in self.bar_right.winfo_children():
             w.destroy()
-        self.btn(self.bar_right, "Next phone", self.next_phone).pack(
+        self.btn(self.bar_right, "Next device", self.next_phone).pack(
             side="left", padx=6)
 
     def next_phone(self):
