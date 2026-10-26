@@ -1,0 +1,75 @@
+name: Build ITAD PhoneSeal ISO
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
+
+      - name: Write build script
+        run: |
+          cat > build-iso.sh <<'EOF'
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y live-build debootstrap xorriso squashfs-tools \
+            syslinux syslinux-common isolinux mtools dosfstools \
+            grub-pc-bin grub-efi-amd64-bin grub-efi-ia32-bin \
+            ca-certificates cpio zstd gnupg \
+            imagemagick fonts-dejavu-core
+          cd /work/build
+          bash build.sh 2>&1 | tee build.log
+          EOF
+
+      - name: Build ISO (Debian 13 container)
+        run: |
+          docker run --rm --privileged -v "$PWD":/work debian:trixie bash /work/build-iso.sh
+
+      - name: Fix file owner and make checksum
+        if: always()
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" build || true
+          cd build && sha256sum itad-phone.iso > itad-phone.iso.sha256 || true
+
+      - name: Report key build results
+        if: always()
+        run: |
+          cd build
+          # Short notes shown on the run page (and readable through the
+          # GitHub API), so the build can be checked without the log.
+          size=$(stat -c %s itad-phone.iso 2>/dev/null || echo 0)
+          parts=$(sfdisk -d itad-phone.iso 2>/dev/null | grep -E '^label:|^itad' | tr '\n' ' ' | sed 's/itad-phone.iso//g')
+          data=$(grep -E 'ITAD_DATA partition added|could not add the ITAD_DATA' build.log | head -n1)
+          echo "::notice title=ISO::size ${size} bytes | ${data:-no ITAD_DATA line} | partitions: ${parts}"
+          skipped=$(grep -m1 'ITAD extra packages SKIPPED' build.log | cut -c1-900)
+          echo "::notice title=Packages::${skipped:-no skipped-packages line}"
+          err=$(grep -E '^E: |ERROR' build.log | head -n3 | tr '\n' ' ' | cut -c1-900)
+          [ -n "$err" ] && echo "::warning title=Errors::${err}" || true
+
+      - name: Upload ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: ITAD-PhoneSeal-ISO
+          path: |
+            build/itad-phone.iso
+            build/itad-phone.iso.sha256
+          retention-days: 5
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build/build.log
+          if-no-files-found: ignore
+          retention-days: 5
