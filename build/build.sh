@@ -1,6 +1,6 @@
 #!/bin/bash
 # build.sh - builds the ITAD PhoneSeal station boot ISO.
-# Output: build/itad-phone.iso
+# Output: build/ITAD-PhoneSeal.iso
 #
 # The station is any PC / laptop booted from this USB. Phones are plugged
 # into it by USB cable (iPhone: libimobiledevice, Android: adb) and run
@@ -421,27 +421,27 @@ echo "== 5. Build =="
 lb build
 ISO="$(ls -1t live-image-*.hybrid.iso binary.hybrid.iso 2>/dev/null | head -n1 || true)"
 [ -n "$ISO" ] || { echo "ERROR: no ISO produced" >&2; exit 1; }
-mv -f "$ISO" itad-phone.iso
-ls -lh itad-phone.iso
+mv -f "$ISO" ITAD-PhoneSeal.iso
+ls -lh ITAD-PhoneSeal.iso
 
 echo "== 6. Add an empty ITAD_DATA partition for reports =="
 # A 300 MB FAT32 partition called ITAD_DATA is added to the image, so
 # every USB written from this ISO has a place to save reports (shown as a
 # separate drive in Windows). If this step fails, the normal ISO is kept.
 if command -v xorriso >/dev/null && command -v mkfs.vfat >/dev/null; then
-  rm -f itad_data.img itad-phone-data.iso
+  rm -f itad_data.img ITAD-PhoneSeal-data.iso
   truncate -s 300M itad_data.img
   mkfs.vfat -F 32 -n ITAD_DATA itad_data.img >/dev/null
-  if xorriso -indev itad-phone.iso -outdev itad-phone-data.iso \
+  if xorriso -indev ITAD-PhoneSeal.iso -outdev ITAD-PhoneSeal-data.iso \
        -boot_image any replay \
        -append_partition 3 0x0c itad_data.img 2>&1 | tail -n 5; then
-    if [ -s itad-phone-data.iso ]; then
-      mv -f itad-phone-data.iso itad-phone.iso
+    if [ -s ITAD-PhoneSeal-data.iso ]; then
+      mv -f ITAD-PhoneSeal-data.iso ITAD-PhoneSeal.iso
       echo "ITAD_DATA partition added"
     fi
   else
     echo "WARNING: could not add the ITAD_DATA partition (ISO kept as is)"
   fi
-  rm -f itad_data.img itad-phone-data.iso
+  rm -f itad_data.img ITAD-PhoneSeal-data.iso
 fi
-ls -lh itad-phone.iso
+ls -lh ITAD-PhoneSeal.iso

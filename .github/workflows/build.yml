@@ -39,7 +39,7 @@ jobs:
         if: always()
         run: |
           sudo chown -R "$(id -u):$(id -g)" build || true
-          cd build && sha256sum itad-phone.iso > itad-phone.iso.sha256 || true
+          cd build && sha256sum ITAD-PhoneSeal.iso > ITAD-PhoneSeal.iso.sha256 || true
 
       - name: Report key build results
         if: always()
@@ -47,8 +47,8 @@ jobs:
           cd build
           # Short notes shown on the run page (and readable through the
           # GitHub API), so the build can be checked without the log.
-          size=$(stat -c %s itad-phone.iso 2>/dev/null || echo 0)
-          parts=$(sfdisk -d itad-phone.iso 2>/dev/null | grep -E '^label:|^itad' | tr '\n' ' ' | sed 's/itad-phone.iso//g')
+          size=$(stat -c %s ITAD-PhoneSeal.iso 2>/dev/null || echo 0)
+          parts=$(sfdisk -d ITAD-PhoneSeal.iso 2>/dev/null | grep -E '^label:|\.iso[0-9]' | tr '\n' ' ' | sed 's/ITAD-PhoneSeal.iso//g')
           data=$(grep -E 'ITAD_DATA partition added|could not add the ITAD_DATA' build.log | head -n1)
           echo "::notice title=ISO::size ${size} bytes | ${data:-no ITAD_DATA line} | partitions: ${parts}"
           skipped=$(grep -m1 'ITAD extra packages SKIPPED' build.log | cut -c1-900)
@@ -61,8 +61,8 @@ jobs:
         with:
           name: ITAD-PhoneSeal-ISO
           path: |
-            build/itad-phone.iso
-            build/itad-phone.iso.sha256
+            build/ITAD-PhoneSeal.iso
+            build/ITAD-PhoneSeal.iso.sha256
           retention-days: 5
 
       - name: Upload build log
