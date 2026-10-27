@@ -31,7 +31,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 
 def run(cmd, timeout=30, inp=None):
@@ -213,6 +213,83 @@ def lsusb_list():
     return out
 
 
+def usb_sysfs(bus, dev):
+    """What a device says about itself on the USB cable, even when it is
+    locked: maker, product name and serial number."""
+    base = "/sys/bus/usb/devices"
+    try:
+        names = os.listdir(base)
+    except OSError:
+        return {}
+    for n in names:
+        d = os.path.join(base, n)
+        try:
+            with open(os.path.join(d, "busnum")) as f:
+                b = int(f.read().strip())
+            with open(os.path.join(d, "devnum")) as f:
+                v = int(f.read().strip())
+        except (OSError, ValueError):
+            continue
+        if b != int(bus) or v != int(dev):
+            continue
+        out = {}
+        for k in ("manufacturer", "product", "serial", "idVendor",
+                  "idProduct"):
+            try:
+                with open(os.path.join(d, k), errors="replace") as f:
+                    out[k] = f.read().strip()
+            except OSError:
+                out[k] = ""
+        return out
+    return {}
+
+
+# Google Pixel code names (bootloader / USB) -> names
+PIXEL_NAMES = {
+    "sunfish": "Pixel 4a", "bramble": "Pixel 4a (5G)", "redfin": "Pixel 5",
+    "barbet": "Pixel 5a", "oriole": "Pixel 6", "raven": "Pixel 6 Pro",
+    "bluejay": "Pixel 6a", "panther": "Pixel 7", "cheetah": "Pixel 7 Pro",
+    "lynx": "Pixel 7a", "felix": "Pixel Fold", "tangorpro": "Pixel Tablet",
+    "shiba": "Pixel 8", "husky": "Pixel 8 Pro", "akita": "Pixel 8a",
+    "tokay": "Pixel 9", "caiman": "Pixel 9 Pro", "komodo": "Pixel 9 Pro XL",
+    "comet": "Pixel 9 Pro Fold", "tegu": "Pixel 9a",
+}
+
+# USB product strings that are not a model name
+GENERIC_USB_NAMES = ("android", "samsung_android", "mtp", "adb", "gadget",
+                     "composite", "phone", "mobile", "device")
+
+
+def usb_model_name(product):
+    """'Pixel 7' -> 'Pixel 7'; 'SAMSUNG_Android' -> '' (not a model)."""
+    p = (product or "").strip()
+    if not p or p.lower().replace(" ", "_") in GENERIC_USB_NAMES or \
+            p.lower() in GENERIC_USB_NAMES:
+        return ""
+    return PIXEL_NAMES.get(p.lower(), p)
+
+
+def fastboot_info(serial):
+    """A locked Android in bootloader / fastboot mode still tells its
+    model, serial and lock state."""
+    rc, o, e = run(["fastboot", "-s", serial, "getvar", "all"], 20)
+    txt = o + e
+    vals = {}
+    for m in re.finditer(r"\(bootloader\)\s+([\w\-\.]+):\s*(.*)", txt):
+        vals.setdefault(m.group(1).strip(), m.group(2).strip())
+    for ln in txt.splitlines():          # some phones: "name: value"
+        k, sep, v = ln.partition(":")
+        if sep and k and " " not in k.strip():
+            vals.setdefault(k.strip(), v.strip())
+    prod = vals.get("product", "")
+    return {"product": prod,
+            "model": PIXEL_NAMES.get(prod.lower(), "") or prod,
+            "serial": vals.get("serialno", "") or serial,
+            "unlocked": vals.get("unlocked", ""),
+            "secure": vals.get("secure", ""),
+            "variant": vals.get("variant", "")}
+
+
 def irecovery_info():
     """What an iPhone / iPad in recovery or DFU mode says about itself
     (ECID, PRODUCT, SRNM = serial, MODE). Empty if irecovery is missing."""
@@ -284,33 +361,52 @@ def list_phones():
             if len(parts) < 2:
                 continue
             ser, st = parts[0], parts[1]
-            model = ""
+            model = dev_code = ""
             for p in parts[2:]:
                 if p.startswith("model:"):
                     model = p[6:].replace("_", " ")
+                elif p.startswith("device:"):
+                    dev_code = p[7:]
             state = {"device": "ready", "unauthorized": "trust",
                      "offline": "offline", "recovery": "recovery",
                      "sideload": "recovery"}.get(st, st)
             seen_android += 1
             out.append({"platform": "android", "id": ser, "state": state,
-                        "label": model or "Android phone / tablet"})
+                        "label": PIXEL_NAMES.get(dev_code, "") or model or
+                        "Android phone / tablet",
+                        "model": PIXEL_NAMES.get(dev_code, "") or model,
+                        "model_id": model, "serial": ser})
     if have("fastboot"):
         rc, o, _ = run(["fastboot", "devices"], 8)
         for ln in o.splitlines():
             parts = ln.split()
             if len(parts) >= 2 and parts[1] == "fastboot":
                 seen_android += 1
+                fb = fastboot_info(parts[0])
                 out.append({"platform": "android", "id": parts[0],
                             "state": "fastboot",
-                            "label": "Android (bootloader / fastboot mode)"})
+                            "label": "%s (bootloader mode)" % (
+                                fb["model"] or "Android"),
+                            "model": fb["model"], "model_id": fb["product"],
+                            "serial": fb["serial"],
+                            "bootloader": "UNLOCKED" if fb["unlocked"] ==
+                            "yes" else ("locked" if fb["unlocked"] == "no"
+                                        else "")})
     # Android devices that are on USB but not talking to adb
     andr = [d for d in usb if d["vid"] in ANDROID_VIDS]
     for d in andr[seen_android:]:
         brand = ANDROID_VIDS[d["vid"]]
+        u = usb_sysfs(d["bus"], d["dev"])
+        model = usb_model_name(u.get("product"))
+        make = brand if "/" not in brand else (u.get("manufacturer") or
+                                               brand)
         out.append({"platform": "android",
                     "id": "usb-%s:%s" % (d["bus"], d["dev"]),
-                    "state": "nodebug", "make": brand,
-                    "label": "%s device" % brand})
+                    "state": "nodebug", "make": make, "model": model,
+                    "serial": u.get("serial", ""),
+                    "usb_product": u.get("product", ""),
+                    "label": ("%s %s" % (make, model)).strip()
+                    if model else "%s device" % make})
     return out
 
 
@@ -1036,14 +1132,37 @@ def locked_info(p):
     make = p.get("make") or ("Apple" if p["platform"] == "ios" else "")
     if make.lower() == "amazon":
         kind = "Amazon Fire tablet"
-    return {"platform": p["platform"], "id": p["id"], "kind": kind,
-            "make": make,
-            "model": apple_name(p.get("product", "")) if p["platform"] ==
-            "ios" else (p.get("label", "") if p.get("state") == "ready"
-                        else ""),
-            "model_id": p.get("product", ""), "serial": p.get("serial", ""),
+    if p["platform"] == "ios":
+        model = apple_name(p.get("product", ""))
+        model_id = p.get("product", "")
+    else:
+        model = p.get("model", "")
+        model_id = p.get("model_id", "")
+    info = {"platform": p["platform"], "id": p["id"], "kind": kind,
+            "make": make, "model": model, "model_id": model_id,
+            "serial": p.get("serial", ""),
             "os": ("iOS %s" % p["os"]) if p.get("os") else "",
+            "ecid": p.get("ecid", ""), "bootloader": p.get("bootloader", ""),
             "imei": [], "notes": [], "passcode_known": False}
+    if p["platform"] == "ios" and p.get("state") in ("ready", "trust",
+                                                     "locked"):
+        info["udid"] = p["id"]
+    if p.get("serial"):
+        info["notes"].append("serial read from the device over USB")
+    return info
+
+
+def merge_locked_info(info, p):
+    """'Read again': fill the empty fields from a fresh look at the device
+    (never overwrite what the technician typed)."""
+    fresh = locked_info(p)
+    filled = []
+    for k in ("make", "model", "model_id", "serial", "os", "ecid",
+              "bootloader", "udid"):
+        if fresh.get(k) and not info.get(k):
+            info[k] = fresh[k]
+            filled.append(k)
+    return filled
 
 
 def locked_checks(kind):

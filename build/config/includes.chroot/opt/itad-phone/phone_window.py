@@ -37,7 +37,7 @@ import phone_core as core
 import phone_report as rpt
 from test_server import TestServer, qr_png
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 BG, BG2, SIDE = "#050F22", "#081831", "#061430"
@@ -717,8 +717,70 @@ class App:
                      "on the setup screen. The report says 'not tested - "
                      "passcode unknown'.", 12, fg=WARN,
                      wraplength=1100).pack(anchor="w", pady=self.px(12))
+        if p.get("state") not in (None, "manual"):
+            f3, c3 = self.card(self.content, "Fill in automatically")
+            f3.pack(fill="x", pady=(self.px(4), 0))
+            got = [k for k in ("make", "model", "serial") if info.get(k)]
+            self.lbl(c3, ("Read from the device over USB: %s." % ", ".join(
+                got)) if got else "The device did not share its details "
+                "over USB yet.", 11, fg=OK if got else MUTED,
+                wraplength=1100).pack(anchor="w")
+            tips = []
+            if p["platform"] == "android":
+                tips.append("More details (exact model, serial, bootloader "
+                            "lock): switch the phone off, hold Power + "
+                            "Volume Down until the bootloader screen "
+                            "(Pixel, Motorola, OnePlus...), then press "
+                            "Read again.")
+                tips.append("IMEI: on the lock screen tap Emergency call and "
+                            "dial *#06# - or look on the SIM tray / box.")
+            else:
+                tips.append("More details (exact model, serial, ECID): put "
+                            "it in recovery mode, then press Read again.\n" +
+                            core.ios_recovery_steps(info.get("kind", ""),
+                                                    info.get("model", "")))
+                tips.append("IMEI: on the SIM tray, the back of older "
+                            "iPhones, or the box.")
+            for t in tips:
+                self.lbl(c3, "- " + t, 10, fg=TEXT, wraplength=1100).pack(
+                    anchor="w", pady=(self.px(3), 0))
+            self.btn(c3, "Read again", self.read_again, "ghost").pack(
+                anchor="w", pady=(self.px(8), 0))
         self.btn(self.bar_right, "Continue", self.device_form_done).pack(
             side="left", padx=6)
+
+    def read_again(self):
+        """Look at the device again (bootloader / recovery mode gives more)
+        and fill only the empty fields."""
+        info, old = self.s["info"], self.s["phone"]
+        for k, var in self.f_vars.items():       # keep what was typed
+            v = var.get().strip()
+            if v:
+                info[k] = [x.strip() for x in v.split(",") if x.strip()] \
+                    if k == "imei" else v
+        info["kind"] = self.v_kind.get()
+
+        def done(phones):
+            if isinstance(phones, Exception):
+                phones = []
+            same = [x for x in phones if x["id"] == old["id"] or (
+                x.get("serial") and x.get("serial") == info.get("serial"))]
+            if not same:
+                same = [x for x in phones if x["platform"] ==
+                        old["platform"] and x["state"] != "ready"]
+            if not same:
+                self.set_status("Device not found - check the cable.", WARN)
+                return
+            newp = same[0]
+            filled = core.merge_locked_info(info, newp)
+            self.s["phone"] = newp
+            self.say("read again (%s): filled %s" % (newp["state"], filled))
+            self.show_device_form()
+            self.set_status(("Filled: %s" % ", ".join(filled)) if filled
+                            else "Nothing new - try bootloader / recovery "
+                            "mode.", OK if filled else WARN)
+        self.set_status("Reading the device again...")
+        self.bg(core.list_phones, done)
 
     def back_to_job(self):
         self.s["info"] = {}
