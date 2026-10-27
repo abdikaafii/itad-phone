@@ -37,7 +37,7 @@ import phone_core as core
 import phone_report as rpt
 from test_server import TestServer, qr_png
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 BG, BG2, SIDE = "#050F22", "#081831", "#061430"
@@ -1302,7 +1302,8 @@ class App:
         def set_(st):
             self.s["tests"][name] = {"status": st, "note": "set by %s" %
                                      self.tech, "auto": False,
-                                     "set_by": self.tech}
+                                     "set_by": self.tech,
+                                     "time": time.strftime("%H:%M:%S")}
             win.destroy()
             self.refresh_results()
         self.btn(bf, "PASS", lambda: set_("PASS"), "ok").pack(side="left",
@@ -1535,8 +1536,13 @@ class App:
                     st = "WARN"
                 if st == NOT_TESTED and not r.get("note"):
                     r["note"] = PASSCODE_NOTE
+                when = r.get("time") or ""
+                by = r.get("set_by") or self.tech
                 tests.append({"component": n, "status": st,
-                              "notes": [r.get("note", "")]})
+                              "notes": [x for x in (r.get("note", ""), (
+                                  "%s (%s)" % (when, by)) if when else
+                                  "(%s)" % by) if x],
+                              "time": when, "by": by})
         fin = C.now()
         rep = {"tool": "phone_window.py", "version": VERSION,
                "job_id": s["job_id"], "asset_id": s["asset_id"],
@@ -1551,8 +1557,10 @@ class App:
                "observations": {"grade": self.v_grade.get(),
                                 "notes": self.v_notes.get().strip()},
                "passcode_unknown": bool(s.get("locked")),
+               "company": rpt.company_name(self.out_dir),
                "test_mode": False}
         rep["overall"], rep["reasons"] = rpt.compute_overall(rep)
+        rep["erasure_id"] = rpt.erasure_id(rep)
         return rep
 
     def save_report(self):

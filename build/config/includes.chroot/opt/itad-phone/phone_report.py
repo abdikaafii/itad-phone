@@ -10,9 +10,37 @@ import os
 
 from itad_common import sign_report
 
-VERSION = "0.2.0"
+VERSION = "0.5.0"
 NOT_FITTED = "N/A"
 NOT_TESTED = "NOT TESTED"      # passcode unknown
+
+
+TILE_COLS = {"r": "#E8453C", "o": "#F59E0B", "y": "#FACC15", "g": "#22C55E",
+             "t": "#14B8A6", "c": "#38BDF8", "b": "#1E7BFF"}
+TICK_TILES = ["...b", "..ct", "ygt.", ".o.."]
+
+
+def company_name(out_dir):
+    """First line of company.txt on the ITAD_DATA stick (USB B)."""
+    try:
+        with open(os.path.join(out_dir, "company.txt"),
+                  errors="replace") as f:
+            for ln in f:
+                ln = ln.strip()
+                if ln and not ln.startswith("#"):
+                    return ln[:80]
+    except OSError:
+        pass
+    return ""
+
+
+def erasure_id(rep):
+    import hashlib
+    d = rep.get("device", {})
+    h = hashlib.sha256(("%s|%s|%s|%s" % (
+        rep.get("job_id"), d.get("serial"), ",".join(d.get("imei") or []),
+        (rep.get("wipe") or {}).get("finished"))).encode())
+    return "%d" % (int(h.hexdigest()[:12], 16) % 10**10)
 
 
 def compute_overall(rep):
@@ -170,28 +198,44 @@ def write_pdf(path, rep):
 
     def deco(c, doc):
         c.saveState()
-        c.setFillColor(NAVY_C)
+        c.setFillColor(colors.HexColor("#07334A"))
         c.rect(0, H - 30 * mm, W, 30 * mm, stroke=0, fill=1)
-        c.setFillColor(BLUE_C)
-        c.rect(0, H - 30 * mm, W, 1.2 * mm, stroke=0, fill=1)
-        c.setFont("Helvetica-Bold", 26)
+        c.setFillColor(colors.HexColor("#0A4560"))
+        c.rect(0, H - 30 * mm, W, 1.0 * mm, stroke=0, fill=1)
+        sq, gp = 3.2 * mm, 0.7 * mm
+        x0, y0 = 14 * mm, H - 9 * mm
+        for r, line in enumerate(TICK_TILES):
+            for k, ch in enumerate(line):
+                if ch in TILE_COLS:
+                    c.setFillColor(colors.HexColor(TILE_COLS[ch]))
+                    c.rect(x0 + k * (sq + gp), y0 - (r + 1) * sq - r * gp,
+                           sq, sq, stroke=0, fill=1)
+        tx = x0 + 4 * (sq + gp) + 4 * mm
+        c.setFont("Helvetica-Bold", 24)
         c.setFillColor(colors.white)
-        c.drawString(16 * mm, H - 17 * mm, "IT")
-        c.setFillColor(BLUE_C)
-        c.drawString(16 * mm + c.stringWidth("IT", "Helvetica-Bold", 26),
-                     H - 17 * mm, "AD")
-        c.setFont("Helvetica", 7.5)
+        c.drawString(tx, H - 18 * mm, "IT")
         c.setFillColor(CYAN_C)
-        c.drawString(16.5 * mm, H - 23 * mm, "P H O N E S E A L   -   "
-                     "S E C U R E  •  T E S T  •  C E R T I F Y")
+        c.drawString(tx + c.stringWidth("IT", "Helvetica-Bold", 24),
+                     H - 18 * mm, "AD")
+        c.setFillColor(colors.white)
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(tx + c.stringWidth("ITAD", "Helvetica-Bold", 24) +
+                     2.5 * mm, H - 18 * mm, "PHONESEAL")
+        c.setFont("Helvetica", 7.2)
+        c.setFillColor(colors.HexColor("#BFD3F2"))
+        c.drawString(tx, H - 24 * mm, "Certified Phone Erasure & Testing")
+        for k, ch in enumerate("yoct"):
+            c.setFillColor(colors.HexColor(TILE_COLS[ch]))
+            c.rect(W - (4 - k) * 4.4 * mm, H - 30 * mm, 3.6 * mm, 3.6 * mm,
+                   stroke=0, fill=1)
         c.setFillColor(colors.white)
         c.setFont("Helvetica-Bold", 12)
-        c.drawRightString(W - 16 * mm, H - 15 * mm,
+        c.drawRightString(W - 16 * mm, H - 13 * mm,
                           "Certificate of Data Erasure")
         c.setFont("Helvetica", 8.5)
-        c.setFillColor(colors.HexColor("#B9C8DE"))
-        c.drawRightString(W - 16 * mm, H - 20.5 * mm, "and Phone Test Report")
-        c.drawRightString(W - 16 * mm, H - 25 * mm, "Job %s   •   IMEI %s" % (
+        c.setFillColor(colors.HexColor("#BFD3F2"))
+        c.drawRightString(W - 16 * mm, H - 18.5 * mm, "and Phone Test Report")
+        c.drawRightString(W - 16 * mm, H - 23 * mm, "Job %s   •   IMEI %s" % (
             rep["job_id"], (d.get("imei") or ["-"])[0]))
         c.setStrokeColor(LINE)
         c.line(16 * mm, 14 * mm, W - 16 * mm, 14 * mm)
@@ -247,7 +291,48 @@ def write_pdf(path, rep):
     top.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                              ("LEFTPADDING", (0, 0), (0, 0), 0),
                              ("ALIGN", (2, 0), (2, 0), "CENTER")]))
-    el += [top, Spacer(1, 5 * mm)]
+    el += [top, Spacer(1, 3 * mm)]
+    who = rep.get("company") or "the operator named below"
+    w0 = rep.get("wipe") or {}
+    if w0.get("state") == "WIPED":
+        stmt = ("<b>We hereby certify</b> that %s has erased the device "
+                "listed in this certificate with ITAD PhoneSeal "
+                "(cryptographic erase, NIST SP 800-88 Rev. 2 Purge and "
+                "IEEE 2883-2022) and has checked that it restarted on its "
+                "setup screen. This certificate is digitally signed; its "
+                "fingerprint is kept for audit." % esc(who))
+    else:
+        stmt = ("This report records the checks and tests carried out by %s "
+                "with ITAD PhoneSeal. <b>No completed data erasure is "
+                "certified in this report</b> (wipe: %s)." % (
+                    esc(who), esc(w0.get("state") or "not done")))
+    st_t = Table([[Paragraph(stmt, ps("stmt", 8.4))]], colWidths=[FW])
+    st_t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), SOFT),
+                              ("LINEBEFORE", (0, 0), (0, -1), 2.2, BLUE_C),
+                              ("TOPPADDING", (0, 0), (-1, -1), 5),
+                              ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                              ("LEFTPADDING", (0, 0), (-1, -1), 8)]))
+    el += [st_t, Spacer(1, 4 * mm)]
+    bcs = []
+    try:
+        from reportlab.graphics.barcode import code128
+        for lab, val in (("ASSET ID", rep.get("asset_id")),
+                         ("IMEI", (d.get("imei") or [""])[0]),
+                         ("SERIAL", d.get("serial"))):
+            val = str(val or "").strip()
+            if val and len(bcs) < 2:
+                bcs.append([Paragraph("%s: <b>%s</b>" % (lab, esc(val)),
+                                      s_txt),
+                            code128.Code128(val, barHeight=9 * mm,
+                                            barWidth=0.33 * mm,
+                                            humanReadable=False)])
+    except Exception:
+        bcs = []
+    if bcs:
+        bt = Table([bcs], colWidths=[FW / len(bcs)] * len(bcs))
+        bt.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
+                                ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
+        el += [bt, Spacer(1, 4 * mm)]
 
     def kv(pairs, cols=2):
         cells, row = [], []
@@ -306,15 +391,21 @@ def write_pdf(path, rep):
                   for c in rep["checks"]],
                  [44 * mm, 22 * mm, FW - 66 * mm]), Spacer(1, 5 * mm)]
     w = rep["wipe"]
-    el += [Paragraph("Data erasure", s_h), Spacer(1, 2 * mm),
+    el += [KeepTogether([Paragraph("Data erasure", s_h), Spacer(1, 2 * mm),
            kv([("State", w.get("state")), ("Method", w.get("method")),
+               ("Erasure ID", rep.get("erasure_id") if w.get("state") ==
+                "WIPED" else "-"),
+               ("Technician", rep["technician"]),
                ("Verification", w.get("verify_note")),
                ("Time", "%s - %s (%s)" % (w.get("started", "-"),
                                           w.get("finished", "-"),
                                           w.get("duration", "-")))]),
-           Paragraph("Phones store data encrypted. A factory reset / erase "
+           Paragraph(("<u>Erasure is compliant with NIST SP 800-88 Rev. 2 "
+                      "Purge (cryptographic erase) and IEEE 2883-2022</u>. "
+                      if w.get("state") == "WIPED" else "") +
+                     "Phones store data encrypted. A factory reset / erase "
                      "destroys the encryption keys, so the data cannot be "
-                     "read (cryptographic erase, NIST SP 800-88).", s_small),
+                     "read.", s_small)]),
            Spacer(1, 5 * mm)]
     det = d.get("details") or []
     if det:
