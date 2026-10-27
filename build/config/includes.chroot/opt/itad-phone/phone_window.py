@@ -37,7 +37,7 @@ import phone_core as core
 import phone_report as rpt
 from test_server import TestServer, qr_png
 
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 BG, BG2, SIDE = "#050F22", "#081831", "#061430"
@@ -48,6 +48,11 @@ TEXT, MUTED, DIM = "#EAF2FF", "#8EA6C8", "#4F6A92"
 OK, BAD, WARN = "#34D399", "#F87171", "#FBBF24"
 OKD, BADD = "#1FA971", "#C62F2F"
 FONT = "DejaVu Sans"
+# banner design (same as LaptopSeal)
+BANNER, BANNER2 = "#07334A", "#0A4560"
+TILE_COLS = {"r": "#E8453C", "o": "#F59E0B", "y": "#FACC15", "g": "#22C55E",
+             "t": "#14B8A6", "c": "#38BDF8", "b": "#1E7BFF"}
+TICK_TILES = ["...b", "..ct", "ygt.", ".o.."]
 STEPS = [("login", "Sign in"), ("job", "Job + device"), ("checks", "Lock checks"),
          ("tests", "Tests"), ("wipe", "Wipe"), ("report", "Report")]
 WEB_TESTS = ["Touch screen", "Multi-touch", "Display", "Speakers",
@@ -181,33 +186,60 @@ class App:
     # ---------- shell ----------
     def build_shell(self):
         tk = self.tk
-        head = tk.Frame(self.root, bg="#06132A")
+        p = self.px
+        # ---- banner (same design as LaptopSeal)
+        head = tk.Frame(self.root, bg=BANNER, height=p(84))
         head.pack(fill="x")
-        lf = tk.Frame(head, bg="#06132A")
-        lf.pack(side="left", padx=self.px(24), pady=self.px(12))
-        tk.Label(lf, text="IT", font=self.F(26, True), fg="white",
-                 bg="#06132A").pack(side="left")
-        tk.Label(lf, text="AD", font=self.F(26, True), fg=BLUE2,
-                 bg="#06132A").pack(side="left")
-        tk.Label(lf, text="  PhoneSeal", font=self.F(20, True), fg=TEXT,
-                 bg="#06132A").pack(side="left")
+        head.pack_propagate(False)
+        sq, gp = p(13), p(3)
+        mark = tk.Canvas(head, width=4 * sq + 3 * gp + 2,
+                         height=4 * sq + 3 * gp + 2, bg=BANNER,
+                         highlightthickness=0)
+        mark.pack(side="left", padx=(p(22), p(12)))
+        for r, line in enumerate(TICK_TILES):
+            for k, ch in enumerate(line):
+                if ch in TILE_COLS:
+                    x0, y0 = 1 + k * (sq + gp), 1 + r * (sq + gp)
+                    mark.create_rectangle(x0, y0, x0 + sq, y0 + sq,
+                                          fill=TILE_COLS[ch], outline="")
+        tk.Label(head, text="IT", font=self.F(34, True), fg="white",
+                 bg=BANNER).pack(side="left")
+        tk.Label(head, text="AD", font=self.F(34, True), fg=CYAN,
+                 bg=BANNER).pack(side="left")
+        tk.Label(head, text=" PHONESEAL", font=self.F(15, True), fg="white",
+                 bg=BANNER).pack(side="left", anchor="s", pady=(0, p(18)))
+        tk.Frame(head, bg="#D7E7F2", width=2, height=p(50)).pack(
+            side="left", padx=p(18))
+        tk.Label(head, text="Certified\nPhone Erasure\n& Testing",
+                 font=self.F(10), fg="white", bg=BANNER,
+                 justify="left").pack(side="left")
+        conf = tk.Canvas(head, width=4 * p(13) + 3 * p(4), height=p(13),
+                         bg=BANNER, highlightthickness=0)
+        conf.place(relx=1.0, rely=1.0, anchor="se")
+        for k, ch in enumerate("yoct"):
+            x0 = k * (p(13) + p(4))
+            conf.create_rectangle(x0, 0, x0 + p(13), p(13),
+                                  fill=TILE_COLS[ch], outline="")
         self.btn(head, "Shut down", self.power_off, "danger").pack(
-            side="right", padx=(self.px(6), self.px(18)), pady=self.px(8))
+            side="right", padx=(p(6), p(20)), pady=(0, p(6)))
         self.btn(head, "Network", self.network_window, "ghost").pack(
-            side="right", padx=self.px(6), pady=self.px(8))
-        self.h_net = tk.Label(head, text="Network: checking...",
-                              font=self.F(10), fg=MUTED, bg="#06132A")
-        self.h_net.pack(side="right", padx=self.px(10))
-        self.h_user = tk.Label(head, text="", font=self.F(12, True),
-                               fg=TEXT, bg="#06132A")
-        self.h_user.pack(side="right", padx=self.px(14))
-        self.h_store = tk.Label(head, text="", font=self.F(10), bg="#06132A")
-        self.h_store.pack(side="right", padx=self.px(10))
+            side="right", padx=p(6), pady=(0, p(6)))
+        # ---- status strip under the banner
+        strip = tk.Frame(self.root, bg=BANNER2)
+        strip.pack(fill="x")
+        self.h_user = tk.Label(strip, text="", font=self.F(10, True),
+                               fg=TEXT, bg=BANNER2)
+        self.h_user.pack(side="left", padx=(p(22), p(18)), pady=p(5))
+        self.h_store = tk.Label(strip, text="", font=self.F(10), bg=BANNER2)
+        self.h_store.pack(side="left", padx=p(18))
         self.h_store.configure(
             text=("Reports: %s" % (C.store_name() or "USB stick"))
             if self.persistent else
             "WARNING: no USB stick - reports are NOT kept",
-            fg=MUTED if self.persistent else BAD)
+            fg="#BFD3F2" if self.persistent else BAD)
+        self.h_net = tk.Label(strip, text="Network: checking...",
+                              font=self.F(10), fg="#BFD3F2", bg=BANNER2)
+        self.h_net.pack(side="left", padx=p(18))
         tk.Frame(self.root, bg=BORDER, height=1).pack(fill="x")
         body = tk.Frame(self.root, bg=BG)
         body.pack(fill="both", expand=True)
@@ -493,7 +525,8 @@ class App:
         self.btn(c, "Sign in", self.do_login).pack(anchor="w")
         cb.bind("<<ComboboxSelected>>", lambda e: pw.focus_set())
         pw.bind("<Return>", lambda e: self.do_login())
-        self.root.after(200, pw.focus_set if names else cb.focus_set)
+        w_f = pw if names else cb
+        self.root.after(200, lambda: w_f.winfo_exists() and w_f.focus_set())
 
     def do_login(self):
         left = self.locked_until - time.time()
