@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-net.py - ITAD PhoneSeal: simple network helpers (v0.3.0)
+net.py - ITAD PhoneSeal: simple network helpers (v0.4.0)
 
 The test page runs in the phone's browser, so the phone must reach the
 station. Three ways, easiest first:
 
   1. Android with USB debugging: over the USB cable (adb reverse). No Wi-Fi.
+     The station installs the PhoneSeal app (app/PhoneSeal.apk) and opens
+     the tests in it; without the app, in the phone's browser.
   2. Station Wi-Fi (hotspot): the station makes its own Wi-Fi network and
      the phone joins it by scanning a QR code. No router needed.
   3. Same Wi-Fi / network: the station joins the office Wi-Fi (simple list
@@ -14,6 +16,7 @@ station. Three ways, easiest first:
 Everything uses NetworkManager (nmcli). All functions return plain values
 and never raise.
 """
+import os
 import random
 import re
 import subprocess
@@ -201,16 +204,55 @@ def wifi_qr_text(ssid, password):
     return "WIFI:T:WPA;S:%s;P:%s;;" % (esc(ssid), esc(password))
 
 
+APP_PKG = "com.itad.phoneseal"
+APP_APK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app",
+                       "PhoneSeal.apk")
+
+
+def android_app_install(serial):
+    """Install (or update) the PhoneSeal test app on the phone over USB.
+    -g gives it camera, microphone etc. at once, so the phone does not ask.
+    (ok, message)"""
+    if not os.path.isfile(APP_APK):
+        return False, "PhoneSeal.apk is not on this USB"
+    rc, o, e = run(["adb", "-s", serial, "install", "-r", "-g", APP_APK], 120)
+    if rc == 0 and "Success" in o + e:
+        return True, "app installed"
+    # an older Android does not know -g
+    rc, o, e = run(["adb", "-s", serial, "install", "-r", APP_APK], 120)
+    if rc == 0 and "Success" in o + e:
+        return True, "app installed"
+    return False, ((e or o).strip().splitlines() or ["install failed"])[-1][:120]
+
+
+def android_app_remove(serial):
+    """Remove the PhoneSeal app from the phone (after testing)."""
+    rc, o, e = run(["adb", "-s", serial, "uninstall", APP_PKG], 60)
+    return rc == 0 and "Success" in o + e
+
+
 def android_usb_open(serial, url_path):
-    """Open the test page on an Android phone over the USB cable: the phone
-    reaches the station through adb (no Wi-Fi). (ok, message)"""
+    """Open the tests on an Android phone over the USB cable: the phone
+    reaches the station through adb (no Wi-Fi). It installs and opens the
+    PhoneSeal app (more tests: proximity, earpiece, flash, buttons...);
+    if that does not work it opens the page in the phone's browser.
+    (ok, message)"""
     rc, o, e = run(["adb", "-s", serial, "reverse", "tcp:%d" % PORT,
                     "tcp:%d" % PORT], 15)
     if rc != 0:
         return False, (e or o).strip()[:120] or "adb reverse failed"
     url = "https://127.0.0.1:%d%s" % (PORT, url_path)
+    ok, why = android_app_install(serial)
+    if ok:
+        run(["adb", "-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"], 10)
+        rc, o, e = run(["adb", "-s", serial, "shell", "am", "start", "-n",
+                        APP_PKG + "/.MainActivity", "--es", "url", url], 15)
+        if rc == 0 and "Error" not in o + e:
+            return True, "PhoneSeal app opened on the phone"
+        why = "app did not open"
     rc, o, e = run(["adb", "-s", serial, "shell", "am", "start", "-a",
                     "android.intent.action.VIEW", "-d", url], 15)
     if rc != 0 or "Error" in o + e:
         return False, "open this on the phone: %s" % url
-    return True, "test page opened on the phone"
+    return True, ("test page opened in the phone's browser (%s) - tap "
+                  "Advanced > Proceed" % why)

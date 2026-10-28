@@ -37,7 +37,7 @@ import phone_core as core
 import phone_report as rpt
 from test_server import TestServer, qr_png
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 BG, BG2, SIDE = "#050F22", "#081831", "#061430"
@@ -58,9 +58,10 @@ STEPS = [("login", "Sign in"), ("job", "Job + device"), ("checks", "Lock checks"
 # Tests done on the phone's own test page (web/index.html), same order.
 # "Charging" is also a phone-page test; it is listed with Battery health.
 WEB_TESTS = ["Touch screen", "Multi-touch", "Telephony", "Microphone",
-             "Speakers", "Headphones", "Buttons & ports", "Vibration",
-             "Display", "Front camera", "Rear camera", "Motion sensors",
-             "Wi-Fi"]
+             "Speakers", "Earpiece", "Headphones", "Buttons & ports",
+             "Vibration", "Display", "Front camera", "Rear camera",
+             "Flash light", "Proximity sensor", "Motion sensors", "Wi-Fi",
+             "Bluetooth"]
 GRADES = ["A - like new", "B - light wear", "C - visible wear",
           "D - heavy wear / damage"]
 LOCATIONS = ["Dublin", "Bench 1", "Bench 2", "Bench 3", "Other"]
@@ -1142,11 +1143,13 @@ class App:
             self.lbl(c, "The test page could not start: %s" % err, 11,
                      fg=BAD, wraplength=330).pack(anchor="w")
         elif usb_android:
-            self.u_msg = self.lbl(c, "Opening on the phone over USB...", 12,
+            self.u_msg = self.lbl(c, "Installing the PhoneSeal app over USB...", 12,
                                   True, fg=CYAN, wraplength=330)
             self.u_msg.pack(anchor="w")
-            self.lbl(c, "On the phone: tap Advanced > Proceed (once), then "
-                     "follow the tests.", 10, fg=MUTED, wraplength=330).pack(
+            self.lbl(c, "The PhoneSeal app is installed and opens on the "
+                     "phone. Follow the tests there. (If it opens in the "
+                     "browser instead: tap Advanced > Proceed once.)", 10,
+                     fg=MUTED, wraplength=330).pack(
                 anchor="w", pady=(self.px(6), 0))
             self.btn(c, "Open it again on the phone", self.open_usb,
                      "ghost").pack(anchor="w", pady=(self.px(8), 0))
@@ -1208,8 +1211,7 @@ class App:
         def done(r):
             ok, txt = r if not isinstance(r, Exception) else (False, str(r))
             try:
-                self.u_msg.configure(text=("Test page opened on the phone"
-                                           if ok else txt),
+                self.u_msg.configure(text=txt,
                                      fg=OK if ok else WARN)
             except Exception:
                 pass
@@ -1327,6 +1329,10 @@ class App:
                     self.s["tests"][k] = dict(v)
             self.server.stop()
             self.server = None
+        p = self.s["phone"]
+        if p.get("platform") == "android" and p.get("usb") is not False:
+            # take the test app off the phone again (the wipe also removes it)
+            self.bg(lambda: net.android_app_remove(p["id"]), lambda r: None)
         self.say("tests: %s" % {k: v["status"] for k, v in
                                 self.s["tests"].items()})
         self.show_wipe()

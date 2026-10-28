@@ -18,13 +18,22 @@ Phones are plugged into the station by USB cable.
    carrier lock. Anything the phone does not report over USB is shown as
    **CHECK BY HAND** with the exact place to look. Never assumed clear.
    A locked phone gets a customer **removal request** saved automatically.
-4. **Tests**: Android with USB debugging opens the test page over the USB
-   cable (no Wi-Fi). Other phones scan a QR code: on the same Wi-Fi, or on
-   the **station Wi-Fi** (press *Network > Start station Wi-Fi*, the phone
-   joins it with a second QR code). The test page runs in the phone's own browser (no app):
-   touch screen, multi-touch, display, speakers, microphone, both cameras,
-   vibration, motion sensors, buttons & ports. Battery health and charging
-   are read by the station. The technician can change any result.
+4. **Tests**: a Mobile Tester list on the phone (Mandatory / Optional,
+   tick boxes, pencil to change a result).
+   * **Android with USB debugging**: the station installs the **PhoneSeal
+     app** over the USB cable (no Wi-Fi) and opens the tests in it. The app
+     tests by itself: battery (charge, health, temperature), proximity,
+     earpiece, flash light, volume and power buttons, headphone socket,
+     accelerometer, Wi-Fi and Bluetooth. The app is removed again after
+     the tests (and by the wipe). The app is built from the `android`
+     folder and goes into the ISO as `opt/itad-phone/app/PhoneSeal.apk`.
+   * **iPhone and other phones**: scan a QR code (same Wi-Fi, or the
+     **station Wi-Fi**: *Network > Start station Wi-Fi*). The same list
+     runs in the phone's browser; what a browser cannot read (proximity,
+     earpiece, flash on some phones) is checked by hand.
+   * Touch screen, multi-touch, screen colours, speaker, microphone, both
+     cameras, vibration and telephony run the same way in both.
+     The technician can change any result.
 5. **Wipe**: phones are encrypted, so an erase destroys the keys
    (cryptographic erase). iPhone: erase over USB if the tools support it,
    or a full erase-restore of iOS (needs internet), or on the phone.

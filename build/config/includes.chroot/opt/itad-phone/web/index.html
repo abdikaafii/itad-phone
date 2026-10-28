@@ -7,7 +7,9 @@
 <title>ITAD PhoneSeal test</title>
 <style>
 /* PhoneSeal mobile tester - list layout: icon, test name, status,
-   big tick box on the right, pencil to change a result by hand. */
+   big tick box on the right, pencil to change a result by hand.
+   Runs in the PhoneSeal Android app (window.PhoneSeal = extra tests)
+   or in any phone browser (iPhone, or Android without the app). */
 :root{--blue:#1D3FB8;--blue2:#2950D6;--ink:#1B2F8C;--bg:#ECEFF6;--row:#F7F8FC;
 --line:#D5DBEA;--muted:#6B7899;--ok:#2E9E6B;--okbg:#CFEBDD;--bad:#D23B3B;--badbg:#F7D6D6;
 --sel:#C9D8F2;--na:#8A94AD;--text:#14204A}
@@ -59,8 +61,12 @@ padding:calc(16px + env(safe-area-inset-top)) 18px calc(16px + env(safe-area-ins
 video{width:100%;max-height:52vh;border-radius:14px;background:#000;object-fit:cover}
 .meter{width:100%;height:22px;background:#E3E8F3;border-radius:12px;overflow:hidden}
 .meter i{display:block;height:100%;width:0;background:var(--blue2)}
-.big{font-size:44px;font-weight:800;color:var(--ink);text-align:center}
+.big{font-size:40px;font-weight:800;color:var(--ink);text-align:center}
+.mid{font-size:18px;font-weight:700;color:var(--ink);text-align:center}
 .link{display:block;text-align:center;text-decoration:none}
+.info{width:100%;background:var(--row);border:1px solid var(--line);border-radius:12px;padding:10px 14px}
+.info div{display:flex;justify-content:space-between;padding:5px 0;font-size:16px}
+.info b{color:var(--ink)}
 #touch{position:fixed;inset:0;z-index:30;display:none;background:#000;touch-action:none}
 #touch .bar{position:absolute;left:0;right:0;top:0;height:calc(54px + env(safe-area-inset-top));
 padding-top:env(safe-area-inset-top);display:flex;align-items:center;justify-content:space-between;
@@ -78,6 +84,7 @@ border-radius:12px;padding:12px;margin-bottom:8px;font-size:16px;width:100%}
 .chk .opts button{border:0;border-radius:16px;margin-left:6px;padding:8px 12px;font-weight:750;background:#E3E8F3;color:var(--muted)}
 .chk .opts button.s1{background:var(--ok);color:#fff}.chk .opts button.s2{background:var(--bad);color:#fff}
 .chk .opts button.s3{background:#64748B;color:#fff}
+.chk .auto{font-size:13px;color:var(--muted);margin-right:6px}
 #done{text-align:center;padding:26px 16px;display:none}
 #done .big{color:var(--ok)}
 </style>
@@ -93,7 +100,7 @@ border-radius:12px;padding:12px;margin-bottom:8px;font-size:16px;width:100%}
       <svg width="34" height="34" viewBox="0 0 34 34" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="15" height="24" rx="3"/><path d="M14 20l6 6 12-14"/></svg>
     </div>
   </div>
-  <div class="meta"><span>Job: __JOB__</span><span><span id="count">0</span> / <span id="total">0</span> done</span></div>
+  <div class="meta"><span>Job: __JOB__</span><span id="mode"></span><span><span id="count">0</span> / <span id="total">0</span> done</span></div>
   <div class="prog"><i id="bar"></i></div>
 </header>
 <main id="list"></main>
@@ -116,6 +123,15 @@ border-radius:12px;padding:12px;margin-bottom:8px;font-size:16px;width:100%}
 <script>
 "use strict";
 const TOKEN="__TOKEN__";
+// ---------- the PhoneSeal Android app (if this page runs inside it) ----------
+const N=window.PhoneSeal||null;
+let F={};                                    // what the phone has (from the app)
+try{if(N)F=JSON.parse(N.info())}catch(e){}
+const H={};                                  // listeners for app events
+window.nativeEvent=(k,a,b)=>{const h=H[k];if(h)try{h(a,b)}catch(e){}};
+const has=k=>!N||F[k]!==false;               // without the app: assume it is fitted
+const viaUSB=location.hostname==="127.0.0.1"||location.hostname==="localhost";
+
 // ---------- line icons (drawn with SVG, no pictures needed) ----------
 const I={
  battery:'<rect x="13" y="7" width="18" height="32" rx="3"/><path d="M19 4h6"/><path d="M23 14l-5 9h7l-5 9"/>',
@@ -124,14 +140,18 @@ const I={
  phone:'<path d="M14 6l6 1 3 8-4 3a20 20 0 0 0 9 9l3-4 8 3 1 6c0 3-3 5-6 5C20 37 9 26 9 12c0-3 2-6 5-6z"/><path d="M28 8a10 10 0 0 1 8 8M28 3a15 15 0 0 1 13 13"/>',
  mic:'<rect x="16" y="4" width="12" height="22" rx="6"/><path d="M10 21a12 12 0 0 0 24 0M22 33v8M15 41h14"/>',
  speaker:'<path d="M8 17h7l9-8v26l-9-8H8z"/><path d="M30 16a8 8 0 0 1 0 12M34 11a14 14 0 0 1 0 22"/>',
+ ear:'<rect x="13" y="4" width="18" height="36" rx="4"/><path d="M18 9h8"/><path d="M36 6a6 6 0 0 1 0 8M39 3a10 10 0 0 1 0 14"/>',
  head:'<path d="M8 30v-6a14 14 0 0 1 28 0v6"/><rect x="6" y="28" width="7" height="11" rx="3"/><rect x="31" y="28" width="7" height="11" rx="3"/>',
  buttons:'<rect x="15" y="7" width="14" height="30" rx="3"/><path d="M12 14v6M32 14v4M7 18l3 3-3 3M37 18l-3 3 3 3"/>',
  vibrate:'<rect x="15" y="8" width="14" height="26" rx="3" transform="rotate(-18 22 21)"/><path d="M8 13l-3 4 3 4M37 22l3 4-3 4M10 30l-2 4M34 9l2-4"/>',
  colors:'<path d="M5 12h8M20 12h8M5 22h3M15 22h13M5 32h12M24 32h4"/><circle cx="16" cy="12" r="3"/><circle cx="11" cy="22" r="3"/><circle cx="20" cy="32" r="3"/><text x="33" y="15" font-size="8" stroke-width="1">R</text><text x="33" y="25" font-size="8" stroke-width="1">G</text><text x="33" y="35" font-size="8" stroke-width="1">B</text>',
  camera:'<path d="M6 15h8l3-5h10l3 5h8v22H6z"/><circle cx="22" cy="25" r="7"/>',
- rear:'<path d="M6 15h8l3-5h10l3 5h8v22H6z"/><circle cx="22" cy="25" r="7"/><circle cx="33" cy="19" r="1.5"/>',
+ rear:'<path d="M6 15h8l3-5h10l3 5h8v22H6z"/><circle cx="22" cy="25" r="7"/><path d="M8 40a16 6 0 0 0 28 0"/><path d="M33 37l3 3-3 3"/>',
+ flash:'<path d="M25 4L11 25h10l-3 15 15-22H23z"/>',
+ prox:'<circle cx="15" cy="16" r="6"/><path d="M5 38c0-7 4-12 10-12s10 5 10 12z"/><rect x="31" y="10" width="9" height="16" rx="2"/>',
  motion:'<rect x="15" y="9" width="14" height="26" rx="3" transform="rotate(20 22 22)"/><path d="M6 30a17 17 0 0 0 10 10M38 14A17 17 0 0 0 28 4"/>',
- wifi:'<path d="M5 18a25 25 0 0 1 34 0M10 24a17 17 0 0 1 24 0M15 30a9 9 0 0 1 14 0"/><circle cx="22" cy="36" r="2"/>'
+ wifi:'<path d="M5 18a25 25 0 0 1 34 0M10 24a17 17 0 0 1 24 0M15 30a9 9 0 0 1 14 0"/><circle cx="22" cy="36" r="2"/>',
+ bt:'<rect x="11" y="4" width="22" height="36" rx="11"/><path d="M17 15l10 9-5 5V11l5 5-10 9"/>'
 };
 const svg=(k,w)=>'<svg viewBox="0 0 44 44" width="'+(w||44)+'" height="'+(w||44)+'" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">'+I[k]+'</svg>';
 const TICK='<svg width="30" height="30" viewBox="0 0 30 30" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6 6 12-13"/></svg>';
@@ -140,27 +160,31 @@ const DASH='<svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="
 const PEN='<svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4H5v17h17v-9"/><path d="M19 3l4 4-10 10H9v-4z"/></svg>';
 
 // id = the name the station and the report use (do not rename).
-// req = true: Mandatory, false: Optional.
+// req = true: Mandatory, false: Optional. Tests the app can do by itself
+// are Mandatory in the app and Optional in a browser (checked by hand).
 const TESTS=[
- {id:"Charging",       label:"Battery",       ic:"battery", req:true,  d:"Plug in the cable - the phone must charge"},
- {id:"Touch screen",   label:"Touch screen",  ic:"touch",   req:true,  d:"Swipe your finger over every square"},
- {id:"Multi-touch",    label:"Multi-touch",   ic:"multi",   req:true,  d:"Touch the screen with two fingers"},
- {id:"Telephony",      label:"Telephony",     ic:"phone",   req:false, d:"SIM signal and a test call"},
- {id:"Microphone",     label:"Microphone",    ic:"mic",     req:true,  d:"Talk, then listen to the recording"},
- {id:"Speakers",       label:"Speaker",       ic:"speaker", req:true,  d:"Play a tone and listen"},
- {id:"Headphones",     label:"Headphones",    ic:"head",    req:false, d:"Headphone socket (if fitted)"},
- {id:"Buttons & ports",label:"Buttons",       ic:"buttons", req:true,  d:"Check each button and part by hand"},
- {id:"Vibration",      label:"Vibration",     ic:"vibrate", req:false, d:"The phone vibrates"},
- {id:"Display",        label:"Screen colors", ic:"colors",  req:true,  d:"Full-screen colours: dead pixels or lines"},
- {id:"Front camera",   label:"Front camera",  ic:"camera",  req:true,  d:"Live picture from the front camera"},
- {id:"Rear camera",    label:"Rear camera",   ic:"rear",    req:true,  d:"Live picture from the back camera"},
- {id:"Motion sensors", label:"Motion sensors",ic:"motion",  req:false, d:"Tilt the phone"},
- {id:"Wi-Fi",          label:"Wi-Fi",         ic:"wifi",    req:true,  d:"Tested automatically"}
+ {id:"Charging",        label:"Battery",        ic:"battery", req:true,  d:"Plug in the cable - the phone must charge"},
+ {id:"Touch screen",    label:"Touch screen",   ic:"touch",   req:true,  d:"Swipe your finger over every square"},
+ {id:"Multi-touch",     label:"Multi-touch",    ic:"multi",   req:true,  d:"Touch the screen with two fingers"},
+ {id:"Telephony",       label:"Telephony",      ic:"phone",   req:false, d:"SIM signal and a test call"},
+ {id:"Microphone",      label:"Microphone",     ic:"mic",     req:true,  d:"Talk, then listen to the recording"},
+ {id:"Speakers",        label:"Speaker",        ic:"speaker", req:true,  d:"Play a tone and listen"},
+ {id:"Earpiece",        label:"Earpiece",       ic:"ear",     req:!!N,   d:"The small call speaker at the top"},
+ {id:"Headphones",      label:"Headphones",     ic:"head",    req:false, d:"Headphone socket (if fitted)"},
+ {id:"Buttons & ports", label:"Buttons",        ic:"buttons", req:true,  d:"Press each button"},
+ {id:"Vibration",       label:"Vibration",      ic:"vibrate", req:false, d:"The phone vibrates"},
+ {id:"Display",         label:"Screen colors",  ic:"colors",  req:true,  d:"Full-screen colours: dead pixels or lines"},
+ {id:"Front camera",    label:"Front camera",   ic:"camera",  req:true,  d:"Live picture from the front camera"},
+ {id:"Rear camera",     label:"Back camera",    ic:"rear",    req:true,  d:"Live picture from the back camera"},
+ {id:"Flash light",     label:"Flash light",    ic:"flash",   req:!!N&&has("flash"),     d:"The camera flash turns on"},
+ {id:"Proximity sensor",label:"Proximity",      ic:"prox",    req:!!N&&has("proximity"), d:"Cover the top of the phone"},
+ {id:"Motion sensors",  label:"Accelerometer",  ic:"motion",  req:true,  d:"Tilt and turn the phone"},
+ {id:"Wi-Fi",           label:"Wi-Fi",          ic:"wifi",    req:false, d:"Wi-Fi turns on and finds networks"},
+ {id:"Bluetooth",       label:"Bluetooth",      ic:"bt",      req:false, d:"Bluetooth turns on"}
 ];
 const R={};               // results {id:{status,note,auto}}
 let queue=null;           // run-all order
 let sel=null;             // selected row (shows the pencil)
-const byId=id=>TESTS.find(t=>t.id===id);
 
 function post(name,status,note,auto){
   R[name]={status,note:note||"",auto:!!auto};
@@ -187,7 +211,6 @@ function draw(){
       '<div class="tick '+tk+'">'+(tk==="PASS"?TICK:tk==="FAIL"?CROSS:tk==="NA"?DASH:"")+'</div>'+
       '<button class="edit" aria-label="Change result">'+PEN+'</button>';
     row.onclick=()=>{
-      if(t.id==="Wi-Fi"){sel=t.id;draw();return}
       if(!r){queue=null;run(t.id);return}
       if(sel===t.id){queue=null;run(t.id);return}   // second tap: test again
       sel=t.id;draw();
@@ -199,6 +222,7 @@ function draw(){
   const mand=TESTS.filter(t=>t.req&&!R[t.id]).length;
   document.getElementById("count").textContent=n;
   document.getElementById("total").textContent=TESTS.length;
+  document.getElementById("mode").textContent=N?"App "+(F.app||""):"Browser";
   document.getElementById("bar").style.width=(100*n/TESTS.length)+"%";
   const b=document.getElementById("runall");
   if(n===TESTS.length){
@@ -207,7 +231,7 @@ function draw(){
   } else if(!mand){
     b.textContent="Finish (skip optional tests)";b.className="btn ok";
   } else {
-    b.textContent=n>1?"Continue tests ("+mand+" mandatory left)":"Start tests";b.className="btn";
+    b.textContent=n>0?"Continue tests ("+mand+" mandatory left)":"Start tests";b.className="btn";
   }
 }
 // change a result by hand (pencil)
@@ -256,52 +280,76 @@ function pf(name,okNote,badNote,auto){
 }
 const NA=(name,label)=>[[label||"Not fitted","ghost",()=>{post(name,"N/A","not fitted");next()}]];
 function el(html){const d=document.createElement("div");d.style.width="100%";d.innerHTML=html;return d}
+const $=id=>document.getElementById(id);
+function autoPass(name,note){post(name,"PASS",note,true);setTimeout(next,700)}
 // ---------- tests ----------
 function run(id){
   sel=id;
   ({"Charging":charging,"Touch screen":touch,"Multi-touch":multi,"Telephony":telephony,
-    "Microphone":mic,"Speakers":speakers,"Headphones":headphones,"Buttons & ports":buttons,
-    "Vibration":vibration,"Display":display,"Front camera":()=>camera("Front camera","user"),
-    "Rear camera":()=>camera("Rear camera","environment"),"Motion sensors":sensors,
-    "Wi-Fi":()=>{}})[id]();
+    "Microphone":mic,"Speakers":speakers,"Earpiece":earpiece,"Headphones":headphones,
+    "Buttons & ports":buttons,"Vibration":vibration,"Display":display,
+    "Front camera":()=>camera("Front camera","user"),"Rear camera":()=>camera("Rear camera","environment"),
+    "Flash light":flash,"Proximity sensor":proximity,"Motion sensors":sensors,
+    "Wi-Fi":wifi,"Bluetooth":bluetooth})[id]();
 }
 function charging(){
-  const b=el('<div class="big" id="bl">'+svg("battery",90)+'</div><p id="bt" style="text-align:center">Plug the phone into the station cable.</p>');
+  if(N){
+    const b=el('<div class="info" id="bi"></div><p id="bt" class="mid" style="margin-top:12px"></p>');
+    panel("Battery","Plug the phone into the station cable. It must charge.",b,
+      [["OK","ok",()=>{post("Charging","PASS",note());next()}],
+       ["Fault","bad",()=>{post("Charging","FAIL",note()+" - check cable / port / battery");next()}]]);
+    let d={};
+    const note=()=>(d.level!=null?d.level+"%, ":"")+(d.charging?"charging ("+d.plugged+")":"NOT charging")+
+      ", health "+(d.health||"?")+(d.temp_c?", "+d.temp_c+" C":"");
+    const show=()=>{
+      $("bi").innerHTML=[["Charge",d.level+"%"],["Charging",d.charging?"Yes ("+d.plugged+")":"No"],
+        ["Health",d.health],["Temperature",d.temp_c+" C"],["Voltage",d.voltage+" V"],["Type",d.technology||"-"]]
+        .map(x=>'<div><span>'+x[0]+'</span><b>'+x[1]+'</b></div>').join("");
+      const bad=d.health&&!/Good|Unknown/.test(d.health);
+      $("bt").textContent=bad?"Battery reports: "+d.health:d.charging?"Charging - OK":"Not charging - plug in the cable";
+      $("bt").style.color=bad?"var(--bad)":d.charging?"var(--ok)":"var(--bad)";
+      if(bad){H.battery=null;post("Charging","FAIL",note(),true);setTimeout(next,1200);return}
+      if(d.charging){H.battery=null;autoPass("Charging",note())}};
+    try{d=JSON.parse(N.battery())}catch(e){}
+    H.battery=j=>{try{d=JSON.parse(j);show()}catch(e){}};
+    cleanup=()=>{H.battery=null};show();return;
+  }
+  const b=el('<div class="big">'+svg("battery",90)+'</div><p id="bt" style="text-align:center">Plug the phone into the station cable.</p>');
   panel("Battery","Is the phone charging from the cable?",b,
     [["Charging - OK","ok",()=>{post("Charging","PASS","charging from the cable");next()}],
      ["Not charging","bad",()=>{post("Charging","FAIL","does not charge - check cable / port / battery");next()}]]);
   if(!navigator.getBattery){
-    document.getElementById("bt").textContent="Look for the charging symbol on the phone's status bar.";return}
+    $("bt").textContent="Look for the charging symbol on the phone's status bar.";return}
   navigator.getBattery().then(bat=>{
-    const show=()=>{document.getElementById("bt").textContent=Math.round(bat.level*100)+"% - "+
+    const show=()=>{$("bt").textContent=Math.round(bat.level*100)+"% - "+
       (bat.charging?"charging":"NOT charging - plug in the cable");
-      if(bat.charging){post("Charging","PASS","charging, "+Math.round(bat.level*100)+"%",true);setTimeout(next,700)}};
+      if(bat.charging){bat.onchargingchange=null;autoPass("Charging","charging, "+Math.round(bat.level*100)+"%")}};
     bat.onchargingchange=show;cleanup=()=>{bat.onchargingchange=null};show();
   }).catch(()=>{});
 }
 function touch(){
-  const T=document.getElementById("touch"),G=document.getElementById("grid");
+  const T=$("touch"),G=$("grid");
   const cols=6,rows=11; G.innerHTML="";
   G.style.top=document.querySelector("#touch .bar").offsetHeight+"px";
   G.style.gridTemplateColumns="repeat("+cols+",1fr)";G.style.gridTemplateRows="repeat("+rows+",1fr)";
-  const cells=[];for(let i=0;i<cols*rows;i++){const c=document.createElement("div");G.appendChild(c);cells.push(c)}
+  for(let i=0;i<cols*rows;i++){G.appendChild(document.createElement("div"))}
   T.style.display="block"; let left=cols*rows;
-  document.getElementById("tleft").textContent="Swipe over every square";
+  $("tleft").textContent="Swipe over every square";
   const hit=(x,y)=>{const e=document.elementFromPoint(x,y);
     if(e&&e.parentNode===G&&!e.classList.contains("on")){e.classList.add("on");left--;
-      document.getElementById("tleft").textContent=left?left+" squares left":"All squares done";
+      $("tleft").textContent=left?left+" squares left":"All squares done";
       if(!left){setTimeout(()=>{T.style.display="none";post("Touch screen","PASS","all "+cols*rows+" squares",true);next()},300)}}};
   const mv=e=>{e.preventDefault();for(const t of e.touches)hit(t.clientX,t.clientY)};
   T.ontouchstart=mv;T.ontouchmove=mv;
   T.onmousemove=e=>{if(e.buttons)hit(e.clientX,e.clientY)};
-  document.getElementById("tfail").onclick=()=>{T.style.display="none";
+  $("tfail").onclick=()=>{T.style.display="none";
     post("Touch screen","FAIL",left+" squares could not be touched",false);next()};
 }
 function multi(){
   const b=el('<div class="big" id="mt">0 fingers</div>');
   let best=0;
   const h=e=>{best=Math.max(best,e.touches.length);
-    document.getElementById("mt").textContent=e.touches.length+" finger"+(e.touches.length===1?"":"s");
+    $("mt").textContent=e.touches.length+" finger"+(e.touches.length===1?"":"s");
     if(e.touches.length>=2){document.removeEventListener("touchstart",h);
       post("Multi-touch","PASS",e.touches.length+" touches at once",true);setTimeout(next,400)}};
   document.addEventListener("touchstart",h);
@@ -334,16 +382,7 @@ function speakers(){
     '<p style="text-align:center;margin-top:14px">Turn the volume up. Many phones have one speaker at the bottom and one at the top.</p>');
   panel("Speaker","Play the tone. Is it clear, with no crackling?",b,
         pf("Speakers","tone clear","no sound / crackling"));
-  document.getElementById("sl").onclick=()=>tone(-1);
-  document.getElementById("sb").onclick=()=>tone(0);
-  document.getElementById("sr").onclick=()=>tone(1);
-}
-function headphones(){
-  const b=el('<button class="btn" id="hp">Play tone in the headphones</button>'+
-    '<p style="text-align:center;margin-top:12px">Plug wired headphones into the socket. The sound must come from the headphones, not the speaker.</p>');
-  panel("Headphones","Did you hear the tone in both ears?",b,
-        pf("Headphones","sound in both ears","no / one-sided sound"),NA("Headphones","No headphone socket"));
-  document.getElementById("hp").onclick=()=>tone(0);
+  $("sl").onclick=()=>tone(-1);$("sb").onclick=()=>tone(0);$("sr").onclick=()=>tone(1);
 }
 function mic(){
   const b=el('<div class="meter"><i id="lv"></i></div><p id="mtxt" style="text-align:center">Allow the microphone, then talk.</p>'+
@@ -358,43 +397,82 @@ function mic(){
     const src=AC.createMediaStreamSource(s),an=AC.createAnalyser();an.fftSize=1024;src.connect(an);
     const buf=new Float32Array(an.fftSize);
     const loop=()=>{an.getFloatTimeDomainData(buf);let m=0;for(const v of buf)m=Math.max(m,Math.abs(v));
-      peak=Math.max(peak,m);document.getElementById("lv").style.width=Math.min(100,m*140)+"%";raf=requestAnimationFrame(loop)};loop();
-    document.getElementById("rec").onclick=()=>{
-      if(!window.MediaRecorder){document.getElementById("mtxt").textContent="Recording not supported - judge by the bar";return}
+      peak=Math.max(peak,m);$("lv").style.width=Math.min(100,m*140)+"%";raf=requestAnimationFrame(loop)};loop();
+    $("rec").onclick=()=>{
+      if(!window.MediaRecorder){$("mtxt").textContent="Recording not supported - judge by the bar";return}
       const r=new MediaRecorder(s),ch=[];r.ondataavailable=e=>ch.push(e.data);
       r.onstop=()=>{const a=new Audio(URL.createObjectURL(new Blob(ch)));a.play();
-        document.getElementById("mtxt").textContent="Playing back - is it clear?"};
-      r.start();document.getElementById("mtxt").textContent="Recording... talk now";setTimeout(()=>r.stop(),3000)};
-  }).catch(e=>{document.getElementById("mtxt").textContent="Microphone blocked: "+e.name+
-    " - allow it in the browser and try again"});
+        $("mtxt").textContent="Playing back - is it clear?"};
+      r.start();$("mtxt").textContent="Recording... talk now";setTimeout(()=>r.stop(),3000)};
+  }).catch(e=>{$("mtxt").textContent="Microphone blocked: "+e.name+" - allow it and try again"});
 }
-function camera(name,facing){
-  const b=el('<video id="cv" autoplay playsinline muted></video><p id="ctxt" style="text-align:center"></p>'+
-             '<button class="btn ghost" id="torch" style="display:none">Flash on / off</button>');
-  let stream=null,torch=false;
-  panel(name,"Is the picture clear and in focus, with no spots or cracks?",b,
-        pf(name,"live picture clear","camera fault / no picture"));
-  cleanup=()=>{if(stream)stream.getTracks().forEach(t=>t.stop())};
-  navigator.mediaDevices.getUserMedia({video:{facingMode:{exact:facing}},audio:false})
-   .catch(()=>navigator.mediaDevices.getUserMedia({video:{facingMode:facing},audio:false}))
-   .then(s=>{stream=s;document.getElementById("cv").srcObject=s;
-     const tr=s.getVideoTracks()[0],cap=tr.getCapabilities?tr.getCapabilities():{};
-     document.getElementById("ctxt").textContent=tr.label||"";
-     if(cap.torch){const tb=document.getElementById("torch");tb.style.display="block";
-       tb.onclick=()=>{torch=!torch;tr.applyConstraints({advanced:[{torch}]}).catch(()=>{})}}})
-   .catch(e=>{document.getElementById("ctxt").textContent="Camera blocked or missing: "+e.name});
+function earpiece(){
+  if(N){
+    const b=el('<div class="big">'+svg("ear",90)+'</div><button class="btn" id="ep">Play tone in the earpiece</button>'+
+      '<p style="text-align:center;margin-top:12px">Hold the top of the phone to your ear, like a call. The tone must come from the small speaker at the top.</p>');
+    panel("Earpiece","Did you hear the tone clearly at the top of the phone?",b,
+          pf("Earpiece","tone clear in the earpiece","no / bad sound from the earpiece"));
+    $("ep").onclick=()=>N.earpiece();return;
+  }
+  panel("Earpiece","Make a short test call and hold the phone to your ear. Is the other person clear?",null,
+        pf("Earpiece","clear during a test call","no / bad sound during a call"),NA("Earpiece","No SIM to test"));
+}
+function headphones(){
+  const b=el('<p id="hs" class="mid">'+(N?"Plug in wired headphones...":"")+'</p>'+
+    '<button class="btn" id="hp">Play tone in the headphones</button>'+
+    '<p style="text-align:center;margin-top:12px">The sound must come from the headphones, not the speaker.</p>');
+  panel("Headphones","Did you hear the tone in both ears?",b,
+        pf("Headphones","sound in both ears","no / one-sided sound"),NA("Headphones","No headphone socket"));
+  $("hp").onclick=()=>tone(0);
+  if(N){H.headset=on=>{$("hs").textContent=on?"Headphones detected - press Play":"Plug in wired headphones...";
+      $("hs").style.color=on?"var(--ok)":"var(--ink)"};cleanup=()=>{H.headset=null}}
+}
+function buttons(){
+  // with the app: volume up / down and power are ticked by themselves
+  const autoKeys=N?{"Volume up":"Volume up","Volume down":"Volume down","Power / side button":"screen"}:{};
+  const items=["Volume up","Volume down","Power / side button","Silent switch / home button",
+    "Face ID / Touch ID / fingerprint","Charging port","SIM tray reads a SIM"];
+  const st={};
+  const box=el("");
+  items.forEach(it=>{const r=document.createElement("div");r.className="chk";r.dataset.k=it;
+    r.innerHTML='<span>'+it+(autoKeys[it]?'<br><span class="auto">press it - ticks by itself</span>':'')+'</span>'+
+      '<span class="opts"><button data-v="1">OK</button><button data-v="2">Fault</button><button data-v="3">N/A</button></span>';
+    r.querySelectorAll("button").forEach(bt=>bt.onclick=()=>set(it,+bt.dataset.v));
+    box.appendChild(r)});
+  box.style.overflow="auto";box.style.maxHeight="62vh";
+  function set(it,v){st[it]=v;const r=box.querySelector('[data-k="'+it+'"]');
+    r.querySelectorAll(".opts button").forEach(x=>x.className=+x.dataset.v===v?"s"+v:"")}
+  panel("Buttons","Press each button on the phone. N/A = this phone does not have it.",box,
+   [["Save","ok",()=>{const miss=items.filter(i=>!st[i]);
+      if(miss.length){alert("Please answer: "+miss[0]);return}
+      const bad=items.filter(i=>st[i]===2);
+      post("Buttons & ports",bad.length?"FAIL":"PASS",bad.length?bad.join(", "):
+        "all checked ("+items.filter(i=>st[i]===3).length+" not fitted)",!!N);next()}]]);
+  if(N){
+    if(!F.fingerprint) set("Face ID / Touch ID / fingerprint",3);
+    N.keys(true);
+    H.key=k=>{if(autoKeys[k])set(k,1)};
+    H.screen=s=>{if(s==="on")set("Power / side button",1)};
+    cleanup=()=>{N.keys(false);H.key=null;H.screen=null};
+  }
 }
 function vibration(){
+  if(N){
+    if(!N.hasVibrator()){post("Vibration","N/A","no vibration motor",true);setTimeout(next,500);return}
+    const b=el('<button class="btn" id="vb">Vibrate now</button>');
+    panel("Vibration","Press the button. Did the phone vibrate?",b,pf("Vibration","vibration felt","no vibration"));
+    $("vb").onclick=()=>N.vibrate(500);N.vibrate(500);return;
+  }
   if(!navigator.vibrate){
     panel("Vibration","This browser cannot vibrate the phone (normal on iPhone). Flip the silent switch or change the volume - did it vibrate?",null,
       [["Yes - OK","ok",()=>{post("Vibration","PASS","checked by hand");next()}],
        ["No - Fault","bad",()=>{post("Vibration","FAIL","no vibration felt");next()}]],NA("Vibration"));return}
   const b=el('<button class="btn" id="vb">Vibrate now</button>');
   panel("Vibration","Press the button. Did the phone vibrate?",b,pf("Vibration","vibration felt","no vibration"));
-  document.getElementById("vb").onclick=()=>navigator.vibrate([400,150,400]);
+  $("vb").onclick=()=>navigator.vibrate([400,150,400]);
 }
 function display(){
-  const C=document.getElementById("color");
+  const C=$("color");
   const cols=[["#FF0000","Red"],["#00FF00","Green"],["#0000FF","Blue"],["#FFFFFF","White"],["#000000","Black"],["#808080","Grey"]];
   let i=0; C.style.display="block"; C.style.background=cols[0][0];
   try{document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen()}catch(e){}
@@ -404,44 +482,116 @@ function display(){
       [["No - OK","ok",()=>{post("Display","PASS","6 colours, no faults");next()}],
        ["Yes - Fault","bad",()=>{post("Display","FAIL","fault seen on the display");next()}]]);};
 }
+function camera(name,facing){
+  const b=el('<video id="cv" autoplay playsinline muted></video><p id="ctxt" style="text-align:center"></p>');
+  let stream=null;
+  panel(name==="Rear camera"?"Back camera":name,"Is the picture clear and in focus, with no spots or cracks?",b,
+        pf(name,"live picture clear","camera fault / no picture"));
+  cleanup=()=>{if(stream)stream.getTracks().forEach(t=>t.stop())};
+  navigator.mediaDevices.getUserMedia({video:{facingMode:{exact:facing}},audio:false})
+   .catch(()=>navigator.mediaDevices.getUserMedia({video:{facingMode:facing},audio:false}))
+   .then(s=>{stream=s;$("cv").srcObject=s;$("ctxt").textContent=s.getVideoTracks()[0].label||""})
+   .catch(e=>{$("ctxt").textContent="Camera blocked or missing: "+e.name});
+}
+function flash(){
+  if(N){
+    if(!F.flash){post("Flash light","N/A","no flash fitted",true);setTimeout(next,500);return}
+    let on=false;
+    const b=el('<div class="big" id="fl" style="color:var(--muted)">'+svg("flash",90)+'</div>'+
+      '<button class="btn" id="ft">Flash on / off</button>');
+    panel("Flash light","Turn the flash on. Does the light on the back come on?",b,
+          pf("Flash light","flash light works","flash does not light"));
+    const tog=()=>{on=!on;N.torch(on);$("fl").style.color=on?"#F5B301":"var(--muted)"};
+    $("ft").onclick=tog;tog();
+    cleanup=()=>{N.torch(false)};return;
+  }
+  // browser: use the back camera's torch where the browser allows it
+  const b=el('<video id="cv" autoplay playsinline muted style="max-height:30vh"></video>'+
+    '<p id="ctxt" style="text-align:center"></p><button class="btn" id="ft" style="display:none">Flash on / off</button>');
+  let stream=null,on=false;
+  panel("Flash light","Does the light on the back come on?",b,
+        pf("Flash light","flash light works","flash does not light"),NA("Flash light","No flash"));
+  cleanup=()=>{if(stream)stream.getTracks().forEach(t=>t.stop())};
+  navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"},audio:false}).then(s=>{
+    stream=s;$("cv").srcObject=s;const tr=s.getVideoTracks()[0],cap=tr.getCapabilities?tr.getCapabilities():{};
+    if(cap.torch){$("ft").style.display="block";$("ft").onclick=()=>{on=!on;tr.applyConstraints({advanced:[{torch:on}]}).catch(()=>{})}}
+    else $("ctxt").textContent="This browser cannot switch the flash. Open the camera app, turn the flash on and check by hand.";
+  }).catch(e=>{$("ctxt").textContent="Camera blocked: "+e.name});
+}
+function proximity(){
+  if(N&&F.proximity){
+    const b=el('<div class="big" id="px">'+svg("prox",90)+'</div><p id="pt" class="mid">Cover the top of the phone with your hand</p>');
+    let near=false,seenNear=false;
+    panel("Proximity","Cover the top of the screen (near the front camera) with your hand, then take it away.",b,
+          [["Fault","bad",()=>{post("Proximity sensor","FAIL",seenNear?"does not go back to far":"does not react to a hand");next()}]]);
+    H.proximity=(v,max)=>{near=v<Math.min(max,5)||v<max;
+      $("px").style.color=near?"var(--ok)":"var(--ink)";
+      if(near){seenNear=true;$("pt").textContent="Hand seen - now take it away"}
+      else if(seenNear){H.proximity=null;N.sensor("proximity",false);autoPass("Proximity sensor","reacts to a hand (near and far)")}};
+    N.sensor("proximity",true);
+    cleanup=()=>{H.proximity=null;N.sensor("proximity",false)};return;
+  }
+  if(N&&!F.proximity){post("Proximity sensor","N/A","no proximity sensor",true);setTimeout(next,500);return}
+  panel("Proximity","Make a test call and hold the phone to your ear: the screen must go dark, and light up again when you move it away.",null,
+        pf("Proximity sensor","screen turns off at the ear","screen stays on at the ear"),NA("Proximity sensor","No SIM to test"));
+}
 function sensors(){
-  const b=el('<div class="big" id="sv">tilt the phone</div><button class="btn" id="sp">Start</button>');
+  const b=el('<div class="big" id="sv">'+svg("motion",90)+'</div><p id="st" class="mid">Tilt and turn the phone</p>'+
+    (N?'':'<button class="btn" id="sp">Start</button>'));
   let base=null,moved=0;
+  const seen=d=>{moved=Math.max(moved,d);
+    if(moved>6){$("st").textContent="Movement seen";$("sv").style.color="var(--ok)";
+      stop();autoPass("Motion sensors","responds to tilting")}};
   const h=e=>{const a=e.accelerationIncludingGravity||{};if(a.x==null)return;
     if(!base)base=[a.x,a.y,a.z];
-    const d=Math.abs(a.x-base[0])+Math.abs(a.y-base[1])+Math.abs(a.z-base[2]);
-    moved=Math.max(moved,d);document.getElementById("sv").textContent=moved>6?"movement seen":"tilt the phone";
-    if(moved>6){window.removeEventListener("devicemotion",h);post("Motion sensors","PASS","responds to tilting",true);setTimeout(next,500)}};
-  panel("Motion sensors","Press Start, then tilt and turn the phone.",b,
+    seen(Math.abs(a.x-base[0])+Math.abs(a.y-base[1])+Math.abs(a.z-base[2]))};
+  let nb=null;
+  const stop=()=>{window.removeEventListener("devicemotion",h);if(N){H.accel=null;N.sensor("accel",false)}};
+  panel("Accelerometer","Tilt and turn the phone.",b,
         [["Fault","bad",()=>{post("Motion sensors","FAIL","no movement seen");next()}]]);
-  cleanup=()=>window.removeEventListener("devicemotion",h);
-  document.getElementById("sp").onclick=()=>{
+  cleanup=stop;
+  if(N){
+    if(!F.accel){post("Motion sensors","FAIL","no accelerometer found",true);setTimeout(next,600);return}
+    H.accel=(xy,z)=>{if(nb==null)nb=[xy,z];seen(Math.abs(xy-nb[0])+Math.abs(z-nb[1]))};
+    N.sensor("accel",true);return;
+  }
+  $("sp").onclick=()=>{
     const go=()=>window.addEventListener("devicemotion",h);
     if(window.DeviceMotionEvent&&DeviceMotionEvent.requestPermission){
       DeviceMotionEvent.requestPermission().then(r=>{if(r==="granted")go()}).catch(()=>{})} else go()};
 }
-function buttons(){
-  const items=["Volume up","Volume down","Power / side button","Silent switch / home button",
-    "Face ID / Touch ID / fingerprint","Earpiece (during test call)","Proximity sensor (screen off during call)",
-    "Charging port","SIM tray reads a SIM","Bluetooth turns on"];
-  const st={};
-  const box=el("");
-  items.forEach(it=>{const r=document.createElement("div");r.className="chk";
-    r.innerHTML='<span>'+it+'</span><span class="opts"><button data-v="1">OK</button><button data-v="2">Fault</button><button data-v="3">N/A</button></span>';
-    r.querySelectorAll("button").forEach(bt=>bt.onclick=()=>{st[it]=+bt.dataset.v;
-      r.querySelectorAll("button").forEach(x=>x.className="");bt.className="s"+bt.dataset.v});
-    box.appendChild(r)});
-  box.style.overflow="auto";box.style.maxHeight="62vh";
-  panel("Buttons","Press each button on the phone. N/A = this phone does not have it.",box,
-   [["Save","ok",()=>{const miss=items.filter(i=>!st[i]);
-      if(miss.length){alert("Please answer: "+miss[0]);return}
-      const bad=items.filter(i=>st[i]===2);
-      post("Buttons & ports",bad.length?"FAIL":"PASS",bad.length?bad.join(", "):
-        "all checked ("+items.filter(i=>st[i]===3).length+" not fitted)");next()}]]);
+function radio(name,label,ic,read,settings,okNote){
+  // Wi-Fi / Bluetooth with the app: ticks by itself when it is on
+  const b=el('<div class="big" id="rv">'+svg(ic,90)+'</div><p id="rt" class="mid"></p>'+
+    '<button class="btn" id="ro">Open '+label+' settings</button>');
+  panel(label,"Turn "+label+" on. It is ticked by itself when it works.",b,
+        pf(name,okNote(),"does not turn on"),NA(name,"Not fitted"));
+  const chk=()=>{let d={};try{d=JSON.parse(read())}catch(e){}
+    if(d.present===false){clearInterval(iv);post(name,"N/A","not fitted",true);setTimeout(next,500);return}
+    const ok=d.enabled&&(name!=="Wi-Fi"||d.networks>0);
+    $("rt").textContent=!d.enabled?label+" is OFF - turn it on":ok?"Working":"On - looking for networks...";
+    $("rv").style.color=ok?"var(--ok)":"var(--ink)";
+    if(ok){clearInterval(iv);autoPass(name,okNote(d))}};
+  $("ro").onclick=()=>settings();
+  const iv=setInterval(chk,1500);chk();
+  cleanup=()=>clearInterval(iv);
 }
-// Wi-Fi works: this page was loaded over the network
-post("Wi-Fi","PASS","page loaded over the network",true);
-fetch("/t/"+TOKEN+"/state").then(r=>r.json()).then(s=>{Object.assign(R,s);draw()}).catch(draw);
+function wifi(){
+  if(N){radio("Wi-Fi","Wi-Fi","wifi",()=>N.wifi(),()=>N.settings("wifi"),
+    d=>d?"on, "+d.networks+" networks seen":"Wi-Fi works");return}
+  if(!viaUSB){post("Wi-Fi","PASS","page loaded over Wi-Fi",true);setTimeout(next,400);return}
+  panel("Wi-Fi","Open Settings > Wi-Fi. Does it turn on and list networks?",null,
+        pf("Wi-Fi","turns on and lists networks","does not turn on / no networks"),NA("Wi-Fi"));
+}
+function bluetooth(){
+  if(N){radio("Bluetooth","Bluetooth","bt",()=>N.bluetooth(),()=>N.settings("bluetooth"),
+    ()=>"turns on");return}
+  panel("Bluetooth","Open Settings > Bluetooth. Does it turn on and find devices?",null,
+        pf("Bluetooth","turns on","does not turn on"),NA("Bluetooth"));
+}
+// Wi-Fi in a browser over Wi-Fi: this page was loaded over the network
+fetch("/t/"+TOKEN+"/state").then(r=>r.json()).then(s=>{Object.assign(R,s);
+  if(!N&&!viaUSB&&!R["Wi-Fi"])post("Wi-Fi","PASS","page loaded over Wi-Fi",true);draw()}).catch(draw);
 draw();
 </script>
 </body>

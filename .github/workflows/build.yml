@@ -11,6 +11,38 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # 1. The Android test app. Built first, because "Free disk space"
+      #    removes the Android tools from the build machine.
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build the PhoneSeal Android app
+        working-directory: android
+        run: gradle --no-daemon assembleDebug
+
+      - name: Put the app in the ISO (opt/itad-phone/app/PhoneSeal.apk)
+        run: |
+          mkdir -p build/config/includes.chroot/opt/itad-phone/app
+          cp android/app/build/outputs/apk/debug/app-debug.apk \
+             build/config/includes.chroot/opt/itad-phone/app/PhoneSeal.apk
+          ls -la build/config/includes.chroot/opt/itad-phone/app
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhoneSeal-app
+          path: build/config/includes.chroot/opt/itad-phone/app/PhoneSeal.apk
+          retention-days: 5
+
+      # 2. The ISO
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
