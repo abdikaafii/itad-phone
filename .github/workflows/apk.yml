@@ -1,0 +1,40 @@
+name: Build PhoneSeal Android app
+
+# Builds only the Android app (PhoneSeal.apk), in about 3-5 minutes.
+# The ISO build makes the same app and puts it inside the ISO.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build the app
+        working-directory: android
+        run: gradle --no-daemon assembleDebug
+
+      - name: Name it PhoneSeal.apk
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk PhoneSeal.apk
+
+      - name: Save the app
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhoneSeal-app
+          path: PhoneSeal.apk
+          retention-days: 7
