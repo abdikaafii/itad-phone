@@ -37,7 +37,7 @@ import phone_core as core
 import phone_report as rpt
 from test_server import TestServer, qr_png
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 BG, BG2, SIDE = "#050F22", "#081831", "#061430"
@@ -55,9 +55,12 @@ TILE_COLS = {"r": "#E8453C", "o": "#F59E0B", "y": "#FACC15", "g": "#22C55E",
 TICK_TILES = ["...b", "..ct", "ygt.", ".o.."]
 STEPS = [("login", "Sign in"), ("job", "Job + device"), ("checks", "Lock checks"),
          ("tests", "Tests"), ("wipe", "Wipe"), ("report", "Report")]
-WEB_TESTS = ["Touch screen", "Multi-touch", "Display", "Speakers",
-             "Microphone", "Front camera", "Rear camera", "Vibration",
-             "Motion sensors", "Buttons & ports", "Wi-Fi"]
+# Tests done on the phone's own test page (web/index.html), same order.
+# "Charging" is also a phone-page test; it is listed with Battery health.
+WEB_TESTS = ["Touch screen", "Multi-touch", "Telephony", "Microphone",
+             "Speakers", "Headphones", "Buttons & ports", "Vibration",
+             "Display", "Front camera", "Rear camera", "Motion sensors",
+             "Wi-Fi"]
 GRADES = ["A - like new", "B - light wear", "C - visible wear",
           "D - heavy wear / damage"]
 LOCATIONS = ["Dublin", "Bench 1", "Bench 2", "Bench 3", "Other"]
