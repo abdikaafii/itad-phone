@@ -90,6 +90,13 @@ log "launch.sh started from $APP_DIR"
 # 1. Never let the screen go blank or sleep
 sudo setterm -blank 0 -powerdown 0 2>/dev/null || true
 
+# 1b. Wi-Fi: switch it on and fix cards that find no networks (e.g. the
+#     Realtek RTL8723BE in HP laptops). Runs in the background, about 1
+#     minute at most, log in /tmp/itad-wifi.log (see wifi_fix.sh).
+if [ -f "$APP_DIR/wifi_fix.sh" ]; then
+    sudo bash "$APP_DIR/wifi_fix.sh" >/dev/null 2>&1 &
+fi
+
 # 2. Find (or make) a place to save reports: ITAD_DATA partition,
 #    another USB stick, or the boot stick itself (see itad_storage.sh)
 read -r ITAD_DATA ITAD_DATA_PERSIST ITAD_DATA_WHERE <<EOF_ST

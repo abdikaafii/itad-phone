@@ -1,6 +1,18 @@
 #!/usr/bin/env python3
 """
-phone_window.py - ITAD PhoneSeal station window (v0.3.0)
+phone_window.py - ITAD PhoneSeal station window (v0.8.0)
+
+v0.8.0: same look and rules as LaptopSeal:
+        - top corner: Wi-Fi icon + network name (tap it for the Network
+          window), Reports (Ready / Not kept), time and date, technician
+        - left menu ends with Settings and Shutdown (same icons)
+        - the SAME Network window as LaptopSeal (netwin.py), plus the
+          station Wi-Fi part
+        - sign in like LaptopSeal: Add technician (approved by an existing
+          technician), clear messages; technicians.txt and the reports
+          folder are the same as LaptopSeal (Ventoy USB > ITAD_REPORTS)
+        - Settings: where reports are saved, technician list, Add technician
+        - same Location list as LaptopSeal
 
 v0.3.0: no more flicker (lists update in place), Home / Back on every page,
         Shut down button, Network window (Wi-Fi list + password, station
@@ -25,19 +37,22 @@ Locked devices (passcode unknown) and devices without USB (Apple Watch...):
 Run:  sudo python3 phone_window.py      (--windowed for a normal window)
 """
 import argparse
+import math
 import os
 import queue
+import re
 import sys
 import threading
 import time
 
 import itad_common as C
 import net
+from netwin import NetworkWindow, StatusPoller
 import phone_core as core
 import phone_report as rpt
 from test_server import TestServer, qr_png
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 BG, BG2, SIDE = "#050F22", "#081831", "#061430"
@@ -64,7 +79,64 @@ WEB_TESTS = ["Touch screen", "Multi-touch", "Telephony", "Microphone",
              "Bluetooth"]
 GRADES = ["A - like new", "B - light wear", "C - visible wear",
           "D - heavy wear / damage"]
-LOCATIONS = ["Dublin", "Bench 1", "Bench 2", "Bench 3", "Other"]
+# same list as LaptopSeal
+LOCATIONS = ["Warehouse DPA3 Test Bay 1", "Warehouse DPA3 Test Bay 2",
+             "Warehouse DPA3 Test Bay 3", "Warehouse DPA3 Test Bay 4", "Other"]
+MIN_PASSWORD = 6
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._'-]{1,29}$")
+
+
+def round_rect(c, x1, y1, x2, y2, r, **kw):
+    r = max(0, min(r, (x2 - x1) / 2, (y2 - y1) / 2))
+    pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
+           x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    return c.create_polygon(pts, smooth=True, **kw)
+
+
+def draw_icon(c, kind, cx, cy, s, color, width=2):
+    """Line icons, the same drawings as LaptopSeal. s = size in pixels."""
+    h = s / 2.0
+    w = max(1, int(width))
+
+    def L(*p, **k):
+        k.setdefault("width", w)
+        return c.create_line(*p, fill=color, capstyle="round",
+                             joinstyle="round", **k)
+    if kind == "gear":
+        r1, r2 = h * .50, h * .80
+        for k in range(8):
+            a = math.radians(k * 45 + 22.5)
+            L(cx + r1 * math.cos(a), cy + r1 * math.sin(a),
+              cx + r2 * math.cos(a), cy + r2 * math.sin(a),
+              width=max(3, int(s * .16)))
+        c.create_oval(cx - r1 - 1, cy - r1 - 1, cx + r1 + 1, cy + r1 + 1,
+                      outline=color, fill=color, width=1)
+        c.create_oval(cx - h * .22, cy - h * .22, cx + h * .22, cy + h * .22,
+                      outline=color, fill=c["bg"], width=1)
+    elif kind in ("wifi", "wifi_off"):
+        by = cy + h * .55
+        for r in (1.05, 0.70, 0.36):
+            rr = h * r
+            c.create_arc(cx - rr, by - rr, cx + rr, by + rr, start=45,
+                         extent=90, style="arc", outline=color,
+                         width=w + 1)
+        d = max(2.0, s * .08)
+        c.create_oval(cx - d, by - d, cx + d, by + d, fill=color,
+                      outline=color)
+        if kind == "wifi_off":
+            L(cx - h * .75, cy - h * .65, cx + h * .75, cy + h * .7,
+              width=w + 1)
+    elif kind == "power":
+        c.create_arc(cx - h * .65, cy - h * .6, cx + h * .65, cy + h * .7,
+                     start=120, extent=300, style="arc", outline=color,
+                     width=w)
+        L(cx, cy - h * .75, cx, cy - h * .05)
+    elif kind == "user":
+        c.create_oval(cx - h * .3, cy - h * .7, cx + h * .3, cy - h * .1,
+                      outline=color, width=w)
+        c.create_arc(cx - h * .65, cy + h * .05, cx + h * .65, cy + h * 1.25,
+                     start=0, extent=180, style="arc", outline=color,
+                     width=w)
 NOT_TESTED = "NOT TESTED"
 PASSCODE_NOTE = "not tested - passcode unknown"
 
@@ -86,6 +158,7 @@ class App:
         self.read_tries = 0
         self.net_win = None
         self.net_state = "none"
+        self.cur_page = ""
         self.reset_job()
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
         self.sc = max(0.7, min(1.3, min(sw / 1600.0, sh / 900.0)))
@@ -112,7 +185,7 @@ class App:
         self.show_login()
         root.bind("<Control-q>", lambda e: self.quit())
         root.after(100, self.pump)
-        root.after(500, self.net_poll)
+        root.after(200, self.tick)
 
     # ---------- small helpers ----------
     def F(self, size, bold=False):
@@ -224,26 +297,56 @@ class App:
             x0 = k * (p(13) + p(4))
             conf.create_rectangle(x0, 0, x0 + p(13), p(13),
                                   fill=TILE_COLS[ch], outline="")
-        self.btn(head, "Shut down", self.power_off, "danger").pack(
-            side="right", padx=(p(6), p(20)), pady=(0, p(6)))
-        self.btn(head, "Network", self.network_window, "ghost").pack(
-            side="right", padx=p(6), pady=(0, p(6)))
-        # ---- status strip under the banner
-        strip = tk.Frame(self.root, bg=BANNER2)
-        strip.pack(fill="x")
-        self.h_user = tk.Label(strip, text="", font=self.F(10, True),
-                               fg=TEXT, bg=BANNER2)
-        self.h_user.pack(side="left", padx=(p(22), p(18)), pady=p(5))
-        self.h_store = tk.Label(strip, text="", font=self.F(10), bg=BANNER2)
-        self.h_store.pack(side="left", padx=p(18))
-        self.h_store.configure(
-            text=("Reports: %s" % (C.store_name() or "USB stick"))
-            if self.persistent else
-            "WARNING: no USB stick - reports are NOT kept",
-            fg="#BFD3F2" if self.persistent else BAD)
-        self.h_net = tk.Label(strip, text="Network: checking...",
-                              font=self.F(10), fg="#BFD3F2", bg=BANNER2)
-        self.h_net.pack(side="left", padx=p(18))
+        # status box (right) - same as LaptopSeal
+        box = tk.Frame(head, bg=BANNER2, highlightbackground="#2E6E8E",
+                       highlightthickness=1)
+        box.pack(side="right", padx=p(26))
+        s0 = tk.Frame(box, bg=BANNER2, cursor="hand2")
+        s0.pack(side="left", padx=(p(14), p(12)), pady=p(8))
+        self.h_net_i = tk.Canvas(s0, width=p(30), height=p(30), bg=BANNER2,
+                                 highlightthickness=0, cursor="hand2")
+        self.h_net_i.pack(side="left", padx=(0, p(8)))
+        s0t = tk.Frame(s0, bg=BANNER2, cursor="hand2")
+        s0t.pack(side="left")
+        self.h_net_t = tk.Label(s0t, text="Network", font=self.F(9),
+                                fg="#BFD3F2", bg=BANNER2, cursor="hand2")
+        self.h_net_t.pack(anchor="w")
+        self.h_net = tk.Label(s0t, text="Checking...", font=self.F(10, True),
+                              fg=MUTED, bg=BANNER2, cursor="hand2")
+        self.h_net.pack(anchor="w")
+        for wdg in (s0, self.h_net_i, s0t, self.h_net_t, self.h_net):
+            wdg.bind("<Button-1>", lambda e: self.network_window())
+        tk.Frame(box, bg="#2E6E8E", width=1).pack(side="left", fill="y",
+                                                  pady=p(8))
+        self.paint_net("", "none")
+        self.f_net = tk.Label(self.root, text="")     # hidden, fed by netwin
+        try:
+            self.net_poller = StatusPoller(self.root, self.f_net, prefix="")
+            self.root.after(1000, self.watch_net)
+        except Exception as e:
+            self.h_net.configure(text="Not available", fg=WARN)
+            sys.stderr.write("network status not available: %s\n" % e)
+        s1 = tk.Frame(box, bg=BANNER2)
+        s1.pack(side="left", padx=(p(16), p(16)), pady=p(8))
+        tk.Label(s1, text="Reports", font=self.F(9), fg="#BFD3F2",
+                 bg=BANNER2).pack(anchor="w")
+        self.h_ready = tk.Label(s1, text="", font=self.F(10, True),
+                                bg=BANNER2)
+        self.h_ready.pack(anchor="w")
+        tk.Frame(box, bg="#2E6E8E", width=1).pack(side="left", fill="y",
+                                                  pady=p(8))
+        s2 = tk.Frame(box, bg=BANNER2)
+        s2.pack(side="left", padx=p(16))
+        self.h_time = tk.Label(s2, text="", font=self.F(11, True), fg=TEXT,
+                               bg=BANNER2)
+        self.h_time.pack(anchor="w")
+        self.h_date = tk.Label(s2, text="", font=self.F(9), fg="#BFD3F2",
+                               bg=BANNER2)
+        self.h_date.pack(anchor="w")
+        self.h_sep2 = tk.Frame(box, bg="#2E6E8E", width=1)
+        self.h_user_i = self.icon(box, "user", 24, "#D8E6FA", BANNER2)
+        self.h_user = tk.Label(box, text="", font=self.F(10, True), fg=TEXT,
+                               bg=BANNER2)
         tk.Frame(self.root, bg=BORDER, height=1).pack(fill="x")
         body = tk.Frame(self.root, bg=BG)
         body.pack(fill="both", expand=True)
@@ -260,9 +363,101 @@ class App:
             self.step_lbls[k] = l
         tk.Label(side, text="PhoneSeal v%s" % VERSION, font=self.F(9),
                  fg=DIM, bg=SIDE).pack(side="bottom", pady=self.px(10))
+        self.nav_item(side, "Shutdown", "power", self.power_off)
+        self.nav_item(side, "Settings", "gear", self.settings_window)
         self.content = tk.Frame(body, bg=BG)
         self.content.pack(side="left", fill="both", expand=True,
                           padx=self.px(26), pady=self.px(18))
+
+    def icon(self, parent, kind, size=26, color=CYAN, bg=None, width=2):
+        s = self.px(size)
+        c = self.tk.Canvas(parent, width=s, height=s, bg=bg or parent["bg"],
+                           highlightthickness=0)
+        draw_icon(c, kind, s / 2.0, s / 2.0, s * .8, color, width)
+        return c
+
+    def nav_item(self, parent, text, ic, cmd):
+        """Left-menu button, same look as LaptopSeal (packed at the bottom)."""
+        tk = self.tk
+        f = tk.Frame(parent, bg=SIDE, highlightthickness=1,
+                     highlightbackground=SIDE, cursor="hand2")
+        f.pack(side="bottom", fill="x", padx=self.px(12), pady=self.px(4))
+        c = tk.Canvas(f, width=self.px(40), height=self.px(40), bg=SIDE,
+                      highlightthickness=0)
+        c.pack(side="left", padx=(self.px(8), self.px(12)), pady=self.px(6))
+        lab = tk.Label(f, text=text, font=self.F(12), fg=TEXT, bg=SIDE)
+        lab.pack(side="left")
+
+        def paint(hover=False):
+            bg = "#0F2A52" if hover else SIDE
+            f.configure(bg=bg, highlightbackground=bg)
+            c.configure(bg=bg)
+            lab.configure(bg=bg)
+            c.delete("all")
+            s = self.px(40)
+            round_rect(c, 2, 2, s - 2, s - 2, self.px(9), fill="#0E2447",
+                       outline="#21406E", width=1)
+            draw_icon(c, ic, s / 2.0, s / 2.0, s * .48, "white", 2)
+        for w in (f, c, lab):
+            w.bind("<Button-1>", lambda e: cmd())
+            w.bind("<Enter>", lambda e: paint(True))
+            w.bind("<Leave>", lambda e: paint(False))
+        paint()
+        return f
+
+    def paint_net(self, text, state):
+        """Top-corner network box: Wi-Fi icon coloured by the state."""
+        col = {"ok": OK, "hotspot": CYAN}.get(state, WARN)
+        c = self.h_net_i
+        c.delete("all")
+        s = self.px(30)
+        draw_icon(c, "wifi" if state in ("ok", "hotspot") else "wifi_off",
+                  s / 2.0, s / 2.0, s * .78, col, 2)
+        if state in ("ok", "hotspot"):
+            name, _, ip = text.partition("  ")
+            name = name.strip() or "Connected"
+            if len(name) > 22:
+                name = name[:21] + "..."
+            self.h_net_t.configure(text=ip.strip() or "Network")
+            self.h_net.configure(text=name, fg=col)
+        else:
+            self.h_net_t.configure(text="Network")
+            self.h_net.configure(text="No network" if text in (
+                "", "No network") else text, fg=col)
+
+    def watch_net(self):
+        """Copy what the netwin poller found into the top-corner box."""
+        try:
+            txt = self.f_net.cget("text")
+            st = getattr(self.net_poller, "state", "none")
+            self.net_state = st
+            if (txt, st) != getattr(self, "_net_last", None):
+                self._net_last = (txt, st)
+                self.paint_net(txt, st)
+        except Exception:
+            pass
+        self.root.after(1000, self.watch_net)
+
+    def tick(self):
+        t = C.now()
+        self.h_time.configure(text=t.strftime("%I:%M %p").lstrip("0"))
+        self.h_date.configure(text="%d %s" % (t.day, t.strftime("%b %Y")))
+        if self.persistent:
+            self.h_ready.configure(text="\u25cf Ready", fg=OK)
+        else:
+            self.h_ready.configure(text="\u25cf Not kept (no USB)", fg=WARN)
+        self.root.after(1000, self.tick)
+
+    def show_user(self, name):
+        """Technician name in the top-corner box (hidden when signed out)."""
+        if name:
+            self.h_sep2.pack(side="left", fill="y", pady=self.px(8))
+            self.h_user_i.pack(side="left", padx=(self.px(14), self.px(6)))
+            self.h_user.configure(text=name)
+            self.h_user.pack(side="left", padx=(0, self.px(16)))
+        else:
+            for w in (self.h_sep2, self.h_user_i, self.h_user):
+                w.pack_forget()
 
     def page(self, key, title, sub="", back=None):
         self.res_gen += 1         # any refresh loop of the old page stops
@@ -365,141 +560,60 @@ class App:
                 subprocess.call(["poweroff"])
         self.ask("Shut down", txt, off, "Shut down")
 
-    def net_poll(self):
-        """Network line in the top bar, every 5 s (only redrawn if it
-        changed)."""
-        def done(r):
-            if isinstance(r, Exception):
-                r = ("No network", "none")
-            txt, st = r
-            self.net_state = st
-            col = {"ok": OK, "hotspot": CYAN}.get(st, WARN)
-            t = "Network: %s" % txt
-            if self.h_net.cget("text") != t:
-                self.h_net.configure(text=t, fg=col)
-            self.root.after(5000, self.net_poll)
-        self.bg(net.summary, done)
-
     def network_window(self):
-        """Simple network settings: Wi-Fi list + password, station Wi-Fi."""
-        tk = self.tk
-        if self.net_win is not None:
-            try:
-                self.net_win.destroy()
-            except Exception:
-                pass
-        win = self.popup("Network")
-        self.net_win = win
-        self.lbl(win, "Network", 18, True, bg=CARD).pack(
-            anchor="w", padx=self.px(22), pady=(self.px(16), 2))
-        self.lbl(win, "The phone must reach this station for the test page. "
-                 "Android with USB debugging works over the cable without "
-                 "any network.", 11, fg=MUTED, bg=CARD,
-                 wraplength=640).pack(anchor="w", padx=self.px(22))
-        n_stat = self.lbl(win, "Now: %s" % self.h_net.cget("text")[9:], 12,
-                          True, fg=CYAN, bg=CARD)
-        n_stat.pack(anchor="w", padx=self.px(22), pady=(self.px(8), 0))
-        # --- Wi-Fi list
-        f, c = self.card(win, "1. Join a Wi-Fi network")
-        f.pack(fill="x", padx=self.px(22), pady=(self.px(10), 0))
-        lb = tk.Listbox(c, font=self.F(13), height=6, bg=CARD2, fg=TEXT,
-                        selectbackground=BLUE, selectforeground="white",
-                        highlightthickness=0, relief="flat",
-                        activestyle="none")
-        lb.pack(fill="x")
-        nets = []
-        row = tk.Frame(c, bg=CARD)
-        row.pack(fill="x", pady=(self.px(8), 0))
-        self.lbl(row, "PASSWORD", 10, True, fg=MUTED).pack(side="left")
-        v_pw = tk.StringVar()
-        pw = self.entry(row, v_pw, secret=True, width=22)
-        pw.pack(side="left", padx=self.px(8), ipady=self.px(4))
-        msg = self.lbl(c, "", 11, fg=MUTED, wraplength=620)
-        msg.pack(anchor="w", pady=(self.px(6), 0))
-
-        def show_nets(r):
-            if not win.winfo_exists():
+        """The same Network window as LaptopSeal, plus station Wi-Fi."""
+        try:
+            if self.net_win is not None and self.net_win.alive():
+                self.net_win.win.lift()
                 return
-            lb.delete(0, "end")
-            nets[:] = [] if isinstance(r, Exception) else r
-            for n in nets:
-                lb.insert("end", "%s%s   %d%%%s" % (
-                    "* " if n["in_use"] else "  ", n["ssid"], n["signal"],
-                    "   (locked)" if n["secure"] else ""))
-            msg.configure(text="" if nets else "No Wi-Fi networks found "
-                          "(no Wi-Fi card, or switched off). Use a network "
-                          "cable or Android over USB.", fg=MUTED if nets
-                          else WARN)
+        except Exception:
+            pass
+        self.net_win = NetworkWindow(self.tk, self.root, font=self.F,
+                                     px=self.px, hotspot=True,
+                                     on_change=self.after_net_change)
 
-        def do_scan():
-            msg.configure(text="Looking for Wi-Fi networks...", fg=MUTED)
-            self.bg(net.scan, show_nets)
+    def after_net_change(self):
+        if self.server and self.cur_page == "tests":
+            self.root.after(1500, self.show_tests)   # new address / QR
 
-        def do_connect():
-            sel = lb.curselection()
-            if not sel:
-                msg.configure(text="Tap a network in the list first.",
-                              fg=WARN)
-                return
-            n = nets[sel[0]]
-            msg.configure(text="Connecting to %s..." % n["ssid"], fg=MUTED)
-            self.bg(lambda: net.connect(n["ssid"], v_pw.get()),
-                    lambda r: after_change(r, msg))
-        bf = tk.Frame(c, bg=CARD)
-        bf.pack(anchor="w", pady=(self.px(6), 0))
-        self.btn(bf, "Connect", do_connect).pack(side="left")
-        self.btn(bf, "Scan again", do_scan, "ghost").pack(side="left",
-                                                          padx=6)
-        lb.bind("<<ListboxSelect>>", lambda e: pw.focus_set())
-        pw.bind("<Return>", lambda e: do_connect())
-        # --- hotspot
-        f2, c2 = self.card(win, "2. Or: station Wi-Fi (no router needed)")
-        f2.pack(fill="x", padx=self.px(22), pady=(self.px(10), 0))
-        self.lbl(c2, "The station makes its own Wi-Fi. The phone joins it by "
-                 "scanning a QR code on the test page.", 11, fg=MUTED,
-                 wraplength=620).pack(anchor="w")
-        msg2 = self.lbl(c2, "", 11, fg=MUTED, wraplength=620)
-        msg2.pack(anchor="w", pady=(self.px(4), 0))
+    # ---------- settings ----------
+    def settings_window(self):
+        """Where reports are saved, technicians, Add technician."""
+        win = self.popup("Settings")
+        self.lbl(win, "Settings", 18, True, bg=CARD).pack(
+            anchor="w", padx=self.px(22), pady=(self.px(16), self.px(6)))
+        f, c = self.card(win, "Reports and accounts")
+        f.pack(fill="x", padx=self.px(22), pady=(0, self.px(10)))
+        self.lbl(c, ("Reports are saved on %s:\n%s\n(reports folder: %s)" % (
+            C.store_name() or "the USB stick", self.out_dir,
+            os.path.join(self.out_dir, "reports")))
+            if self.persistent else
+            ("Reports are NOT kept: no USB stick to save them on.\nThey are "
+             "only in memory (%s) and are lost at power off.\nBoot from the "
+             "Ventoy USB (or plug in any USB stick) and restart." %
+             self.out_dir), 11, fg=OK if self.persistent else BAD,
+            wraplength=560).pack(anchor="w")
+        f, c = self.card(win, "Technicians")
+        f.pack(fill="x", padx=self.px(22))
+        acc = C.load_accounts(self.out_dir)
+        ready = sorted((a["name"] for a in acc.values() if a["hash"]),
+                       key=str.lower)
+        self.lbl(c, ("%d technician%s: %s" % (
+            len(ready), "" if len(ready) == 1 else "s", ", ".join(ready)))
+            if ready else "No technician accounts yet.", 11,
+            wraplength=560).pack(anchor="w", pady=(0, self.px(8)))
 
-        def hs_on():
-            msg2.configure(text="Starting the station Wi-Fi...", fg=MUTED)
-            self.bg(net.hotspot_start, lambda r: after_change(
-                (r[0], r[1]) if not isinstance(r, Exception) else
-                (False, str(r)), msg2))
-
-        def hs_off():
-            self.bg(lambda: (net.hotspot_stop(), (True, "Station Wi-Fi off"))
-                    [1], lambda r: after_change(r, msg2))
-        bf2 = tk.Frame(c2, bg=CARD)
-        bf2.pack(anchor="w", pady=(self.px(6), 0))
-        self.btn(bf2, "Start station Wi-Fi", hs_on).pack(side="left")
-        self.btn(bf2, "Stop it", hs_off, "ghost").pack(side="left", padx=6)
-
-        def after_change(r, label):
-            ok, text = r if not isinstance(r, Exception) else (False, str(r))
-            if win.winfo_exists():
-                label.configure(text=text, fg=OK if ok else BAD)
-            self.bg(net.summary, lambda s: (
-                n_stat.configure(text="Now: %s" % s[0]) if
-                (not isinstance(s, Exception) and win.winfo_exists())
-                else None))
-            if ok and self.server and self.cur_page == "tests":
-                self.show_tests()      # new address / QR codes
-
-        def advanced():
-            import subprocess
-            try:
-                subprocess.Popen(["xterm", "-e", "nmtui"])
-            except Exception as e:
-                msg.configure(text="Could not open: %s" % e, fg=BAD)
-        bf3 = tk.Frame(win, bg=CARD)
-        bf3.pack(fill="x", padx=self.px(22), pady=self.px(14))
-        self.btn(bf3, "Close", win.destroy).pack(side="right")
-        self.btn(bf3, "Cable / advanced settings", advanced, "ghost").pack(
-            side="left")
+        def add():
+            win.destroy()
+            self.add_tech_dialog()
+        self.btn(c, "Add technician", add, "ghost").pack(anchor="w")
+        bf = self.tk.Frame(win, bg=CARD)
+        bf.pack(fill="x", padx=self.px(22), pady=self.px(16))
+        self.btn(bf, "Close", win.destroy).pack(side="right")
+        self.lbl(bf, "PhoneSeal v%s" % VERSION, 10, fg=MUTED,
+                 bg=CARD).pack(side="left")
         win.lift()
         win.focus_force()
-        do_scan()
 
     # ---------- 1. sign in ----------
     def show_login(self):
@@ -521,12 +635,18 @@ class App:
         pw = self.entry(c, self.v_pass, secret=True, width=30)
         pw.pack(anchor="w", pady=(2, self.px(12)), ipady=self.px(6))
         self.l_msg = self.lbl(c, "" if names else
-                              "No technicians found. Put technicians.txt "
-                              "(lines like Ali:password) on the ITAD_DATA "
-                              "stick and restart.", 11, fg=WARN,
+                              "No technician accounts yet. Press 'Add "
+                              "technician' (bottom right) to create the "
+                              "first one.", 11, fg=WARN,
                               wraplength=520)
         self.l_msg.pack(anchor="w", pady=(0, self.px(10)))
         self.btn(c, "Sign in", self.do_login).pack(anchor="w")
+        self.l_pw = pw
+        self.btn(self.bar_right, "Add technician", self.add_tech_dialog,
+                 "ghost").pack(side="left")
+        if not self.persistent:
+            self.set_status("No USB stick to save on: new accounts and "
+                            "reports are lost at power off.", WARN)
         cb.bind("<<ComboboxSelected>>", lambda e: pw.focus_set())
         pw.bind("<Return>", lambda e: self.do_login())
         w_f = pw if names else cb
@@ -538,12 +658,16 @@ class App:
             self.l_msg.configure(text="Too many wrong tries. Wait %d s." %
                                  (int(left) + 1), fg=BAD)
             return
-        a = C.load_accounts(self.out_dir).get(self.v_user.get().lower())
-        if a and a["hash"] and C.verify_password(self.v_pass.get(),
-                                                 a["hash"]):
+        name, pw = self.v_user.get().strip(), self.v_pass.get()
+        if not name or not pw:
+            self.l_msg.configure(text="Choose your name and type your "
+                                      "password.", fg=WARN)
+            return
+        a = C.load_accounts(self.out_dir).get(name.lower())
+        if a and a["hash"] and C.verify_password(pw, a["hash"]):
             self.fails = 0
             self.tech = a["name"]
-            self.h_user.configure(text="Signed in: %s" % self.tech)
+            self.show_user(self.tech)
             self.say("signed in: %s" % self.tech)
             self.show_job()
             return
@@ -555,6 +679,103 @@ class App:
             self.locked_until = time.time() + C.LOCK_SECONDS
             txt += " Locked for %d s." % C.LOCK_SECONDS
         self.l_msg.configure(text=txt, fg=BAD)
+
+    def add_tech_dialog(self):
+        """Add or change a technician. The first account needs no approval;
+        after that an existing technician must approve with their password.
+        Saved as a secure hash in technicians.txt (same file as LaptopSeal)."""
+        tk = self.tk
+        acc = C.load_accounts(self.out_dir)
+        approvers = {k: a for k, a in acc.items() if a["hash"]}
+        need_ok = bool(approvers)
+        win = self.popup("Add technician")
+        inner = tk.Frame(win, bg=CARD)
+        inner.pack(padx=self.px(30), pady=self.px(22))
+        self.lbl(inner, "Add or change a technician", 16, True).pack(
+            anchor="w")
+        self.lbl(inner, "The password is saved as a secure hash, never as "
+                        "plain text.", 10, fg=MUTED).pack(
+            anchor="w", pady=(2, self.px(14)))
+        v = {k: tk.StringVar(value="") for k in
+             ("name", "pw1", "pw2", "by", "bypw")}
+        fields = [("NEW TECHNICIAN NAME", "name", False),
+                  ("PASSWORD (at least %d characters)" % MIN_PASSWORD,
+                   "pw1", True),
+                  ("TYPE THE PASSWORD AGAIN", "pw2", True)]
+        if need_ok:
+            fields += [("APPROVED BY (an existing technician)", "by", False),
+                       ("THEIR PASSWORD", "bypw", True)]
+        first = None
+        for label, key, secret in fields:
+            self.lbl(inner, label, 9, True, fg=MUTED).pack(anchor="w")
+            e = self.entry(inner, v[key], secret=secret, width=34)
+            e.pack(fill="x", pady=(2, self.px(10)), ipady=self.px(4))
+            first = first or e
+        msg = self.lbl(inner, "" if need_ok else
+                       "This is the first account, so no approval is "
+                       "needed.", 10, fg=MUTED, wraplength=380)
+        msg.pack(anchor="w", pady=(0, self.px(10)))
+
+        def save():
+            name = v["name"].get().strip()
+            p1, p2 = v["pw1"].get(), v["pw2"].get()
+            if not NAME_RE.match(name):
+                msg.configure(text="Name: 2-30 letters or numbers (spaces, "
+                                   "dot, dash allowed).", fg=BAD)
+                return
+            if len(p1) < MIN_PASSWORD:
+                msg.configure(text="Password is too short.", fg=BAD)
+                return
+            if p1 != p2:
+                msg.configure(text="The two passwords are not the same.",
+                              fg=BAD)
+                return
+            if need_ok:
+                a = approvers.get(v["by"].get().strip().lower())
+                if not a or not C.verify_password(v["bypw"].get(),
+                                                  a["hash"]):
+                    v["bypw"].set("")
+                    msg.configure(text="Approval name or password is wrong.",
+                                  fg=BAD)
+                    return
+            try:
+                path = C.save_account(self.out_dir, name, p1)
+            except Exception as e:
+                why = ("the USB stick gave a write error - check it in "
+                       "Windows (or use another stick) and restart"
+                       if getattr(e, "errno", None) == 5 else str(e))
+                msg.configure(text="Could not save: %s" % why, fg=BAD)
+                return
+            win.destroy()
+            note = "Saved %s in %s." % (name, path)
+            if not self.persistent:
+                note += ("  WARNING: no USB stick, this account is lost at "
+                         "power off.")
+            if self.cur_page == "login" and not self.tech:
+                self.show_login()
+                self.v_user.set(name)
+                self.l_msg.configure(text=note + "  Now sign in.",
+                                     fg=OK if self.persistent else WARN)
+                try:
+                    self.l_pw.focus_set()
+                except Exception:
+                    pass
+
+        bf = tk.Frame(inner, bg=CARD)
+        bf.pack(fill="x")
+        self.btn(bf, "Save", save).pack(side="left")
+        self.btn(bf, "Cancel", win.destroy, "ghost").pack(
+            side="left", padx=self.px(8))
+        win.update_idletasks()
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        w, h = win.winfo_reqwidth(), win.winfo_reqheight()
+        win.geometry("+%d+%d" % (max(0, (sw - w) // 2),
+                                 max(0, (sh - h) // 2)))
+        try:
+            win.grab_set()
+        except Exception:
+            pass
+        first.focus_set()
 
     # ---------- 2. job + phone ----------
     def reset_job(self):
@@ -605,7 +826,7 @@ class App:
     def sign_out(self):
         self.polling = False
         self.tech = ""
-        self.h_user.configure(text="")
+        self.show_user("")
         self.reset_job()
         self.show_login()
 

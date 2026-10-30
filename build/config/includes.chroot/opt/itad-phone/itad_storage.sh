@@ -1,6 +1,10 @@
 #!/bin/bash
-# itad_storage.sh - find (or make) a place to SAVE reports (v1.1.0)
+# itad_storage.sh - find (or make) a place to SAVE reports (v1.2.0)
 #
+# v1.2.0: Ventoy stick found even when renamed, opened through a loop
+#         device when Ventoy keeps it busy; the small VTOYEFI boot
+#         partition is never used for reports. Same file in LaptopSeal
+#         and PhoneSeal.
 # v1.1.0: a separate ITAD_DATA stick ("USB B", shared with SwitchSeal) is
 #         always used first, before the ITAD_DATA part of the boot USB.
 #         Every place is checked with a real write (1 MB, synced, read
@@ -81,12 +85,42 @@ for dev in $onboot; do
 done
 
 # ---- 1a. Ventoy stick: its own data partition ----------------------------
-vdev="$(blkid -L Ventoy 2>/dev/null | head -n1)"
-if [ -n "$vdev" ] && mount_it "$vdev"; then
-    mkdir -p "$MNT/ITAD_REPORTS"
-    log "using Ventoy partition $vdev"
-    say "$MNT/ITAD_REPORTS" 1 "Ventoy_stick_folder"
-fi
+# v1.2.0: the data partition is found even if it was renamed in Windows
+# (it is partition 1 of the disk that has the small VTOYEFI partition).
+# Ventoy keeps that partition busy while an ISO runs, so a normal mount
+# can fail with "busy". Then it is opened through a loop device instead
+# (only the free space is written; the ISO files are never touched).
+# Setting VTOY_LINUX_REMOUNT=1 in ventoy/ventoy.json also helps.
+ventoy_parts() {
+    blkid -L Ventoy 2>/dev/null
+    for efi in $(blkid -t LABEL=VTOYEFI -o device 2>/dev/null); do
+        d="$(lsblk -no PKNAME "$efi" 2>/dev/null | head -n1)"
+        [ -z "$d" ] && continue
+        lsblk -nlo NAME,TYPE "/dev/$d" 2>/dev/null | \
+            awk '$2=="part"{print "/dev/"$1; exit}'
+    done
+}
+modprobe exfat 2>/dev/null
+for vdev in $(ventoy_parts | awk '!seen[$0]++'); do
+    [ -b "$vdev" ] || continue
+    log "Ventoy data partition: $vdev ($(blkid -o value -s TYPE "$vdev"))"
+    if mount_it "$vdev"; then
+        mkdir -p "$MNT/ITAD_REPORTS"
+        log "using Ventoy partition $vdev"
+        say "$MNT/ITAD_REPORTS" 1 "Ventoy_stick_folder"
+    fi
+    log "normal mount of $vdev failed - trying through a loop device"
+    lo="$(losetup -f --show "$vdev" 2>>"$LOG")"
+    if [ -n "$lo" ]; then
+        if mount_it "$lo"; then
+            mkdir -p "$MNT/ITAD_REPORTS"
+            log "using Ventoy partition $vdev through $lo"
+            say "$MNT/ITAD_REPORTS" 1 "Ventoy_stick_folder"
+        fi
+        losetup -d "$lo" 2>/dev/null
+    fi
+    log "Ventoy partition $vdev could not be opened"
+done
 
 # ---- 1b. any other USB stick that is plugged in --------------------------
 while read -r name pk tran fs; do
@@ -96,6 +130,8 @@ while read -r name pk tran fs; do
     dt="$(lsblk -dno TRAN "/dev/$d" 2>/dev/null)"
     [ "$dt" = "usb" ] || continue
     case "$fs" in vfat|exfat|ntfs) ;; *) continue ;; esac
+    [ "$(blkid -o value -s LABEL "/dev/$name" 2>/dev/null)" = "VTOYEFI" ] \
+        && continue                   # Ventoy's own boot files: never
     if mount_it "/dev/$name"; then
         mkdir -p "$MNT/ITAD_REPORTS"
         log "using USB stick /dev/$name ($fs)"
