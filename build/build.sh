@@ -36,7 +36,8 @@ mkdir -p "$CFG/package-lists"
 rm -f "$CFG"/package-lists/repo-*.list.chroot
 printf '%s\n' plymouth plymouth-themes xorg xinit openbox xterm python3 \
   python3-tk python3-reportlab python3-pil python3-cryptography sudo \
-  util-linux x11-xserver-utils network-manager iw rfkill openssl \
+  util-linux x11-xserver-utils network-manager wpasupplicant wireless-regdb \
+  iw rfkill openssl \
   libimobiledevice-utils usbmuxd fonts-dejavu-core zstd dosfstools \
   exfatprogs pciutils usbutils iproute2 \
   > "$CFG/package-lists/itad.list.chroot"
@@ -326,6 +327,20 @@ printf '%s\n' "[Unit]" "Description=ITAD: remove boot screen if the window never
   "ExecStart=/bin/sh -c 'sleep 60; /usr/bin/plymouth quit || true'" \
   "[Install]" "WantedBy=multi-user.target" \
   > "$INC/etc/systemd/system/itad-splash-timeout.service"
+
+echo "== 3b. Wi-Fi settings =="
+# NetworkManager: scan with the card's real address (a random one makes
+# some Realtek / Broadcom cards find no networks), Wi-Fi power saving off,
+# and manage every network card (live systems sometimes leave them out).
+NM="$INC/etc/NetworkManager/conf.d"; mkdir -p "$NM"
+printf '%s\n' "[main]" "plugins=keyfile" "" \
+  "[ifupdown]" "managed=true" "" \
+  "[device]" "wifi.scan-rand-mac-address=no" "" \
+  "[connection]" "wifi.powersave=2" \
+  > "$NM/itad-wifi.conf"
+# Anything in /etc/network/interfaces makes NetworkManager ignore that card.
+mkdir -p "$INC/etc/network"
+printf '%s\n' "auto lo" "iface lo inet loopback" > "$INC/etc/network/interfaces"
 
 echo "== 4a. sudo + tool files =="
 mkdir -p "$INC/etc/sudoers.d"

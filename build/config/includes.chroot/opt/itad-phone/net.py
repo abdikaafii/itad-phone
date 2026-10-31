@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """
-net.py - ITAD network helpers, shared by LaptopSeal / SwitchSeal / PhoneSeal (v0.5.0)
+net.py - ITAD network helpers, shared by LaptopSeal / SwitchSeal / PhoneSeal (v0.6.0)
+
+v0.6.0: "The Wi-Fi is still being set up" can no longer get stuck: it is
+only shown while wifi_fix.sh is really running (and never after 3
+minutes). When no networks are found, the message now names the Wi-Fi
+card and its driver, so the problem can be fixed in the next ISO. Wi-Fi
+power saving is switched off before each scan.
 
 v0.5.0: ONE file for all tools (the PhoneSeal app install is in here too).
 wifi_problem() also says when the Wi-Fi is still being set up at start-up
@@ -173,6 +179,7 @@ def scan():
     dev = _wifi_ready()
     if not dev:
         return []
+    run(["iw", "dev", dev, "set", "power_save", "off"], 5)
     fields = ["nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY",
               "device", "wifi", "list", "ifname", dev]
     nets = {}
@@ -188,13 +195,57 @@ def scan():
 
 
 def wifi_fix_state():
-    """'working' while wifi_fix.sh is still setting up the Wi-Fi (about one
-    minute after start-up), 'done' after, '' if it did not run."""
+    """'working' while wifi_fix.sh is really still setting up the Wi-Fi
+    (at most 3 minutes after it started), 'done' after, '' if it did not
+    run. A state file left on "working" by a copy that was stopped is
+    ignored, so the window never gets stuck on "still being set up"."""
+    path = "/tmp/itad-wifi.state"
     try:
-        with open("/tmp/itad-wifi.state") as f:
-            return f.read().strip()
+        with open(path) as f:
+            st = f.read().strip()
+        age = time.time() - os.path.getmtime(path)
     except Exception:
         return ""
+    if st != "working":
+        return st
+    if age > 180:
+        return "done"
+    rc, o, e = run(["pgrep", "-f", "wifi_fix.sh"], 5)
+    if rc == 1:               # pgrep ran and found no wifi_fix.sh
+        return "done"
+    return "working"
+
+
+def wifi_card():
+    """Wi-Fi card name + driver in one short line ('' if unknown)."""
+    try:
+        with open("/tmp/itad-wifi.card") as f:
+            lines = [ln.strip() for ln in f if ln.strip()]
+    except Exception:
+        lines = []
+    if not lines:
+        rc, o, e = run(["lspci", "-nnk"], 10)
+        lines = []
+        grab = 0
+        for ln in o.splitlines():
+            if re.search(r"network controller", ln, re.I):
+                lines.append(ln.strip())
+                grab = 3
+            elif grab:
+                grab -= 1
+                if "Kernel driver in use" in ln:
+                    lines.append(ln.strip())
+    name, drv = "", ""
+    for ln in lines:
+        m = re.search(r"Kernel driver in use:\s*(\S+)", ln)
+        if m:
+            drv = drv or m.group(1)
+        elif not name:
+            name = re.sub(r"^\S+\s+", "", ln)
+            name = re.sub(r"^Network controller \[\w+\]:\s*", "", name)
+    if not name:
+        return ""
+    return "%s, driver: %s" % (name[:90], drv or "NONE")
 
 
 def wifi_problem():
@@ -257,9 +308,12 @@ def wifi_problem():
     if "no networks with any setting" in wlog:
         return ("The Wi-Fi card (Realtek RTL8723BE) found no networks with "
                 "either antenna setting. Check the laptop's Wi-Fi key, move "
-                "closer to the router, or use a network cable.")
-    return ("The Wi-Fi card works but found no networks here. Move closer "
-            "to the router, wait a few seconds and press Scan again.")
+                "closer to the router, or use a network cable.\nCard: %s"
+                % (wifi_card() or "RTL8723BE"))
+    card = wifi_card()
+    return ("The Wi-Fi card works but found no networks here. Wait 10 "
+            "seconds and press Scan again. If it stays empty, send a photo "
+            "of this message.%s" % (("\nCard: " + card) if card else ""))
 
 
 def connect(ssid, password=""):
