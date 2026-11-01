@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-net.py - ITAD network helpers, shared by LaptopSeal / SwitchSeal / PhoneSeal (v0.6.0)
+net.py - ITAD network helpers, shared by LaptopSeal / SwitchSeal / PhoneSeal (v0.6.1)
+
+v0.6.1: the times in the messages now match wifi_fix.sh v1.2.0 (it can
+run up to 4 minutes at start-up).
 
 v0.6.0: "The Wi-Fi is still being set up" can no longer get stuck: it is
 only shown while wifi_fix.sh is really running (and never after 3
@@ -196,7 +199,7 @@ def scan():
 
 def wifi_fix_state():
     """'working' while wifi_fix.sh is really still setting up the Wi-Fi
-    (at most 3 minutes after it started), 'done' after, '' if it did not
+    (at most 5 minutes after it started), 'done' after, '' if it did not
     run. A state file left on "working" by a copy that was stopped is
     ignored, so the window never gets stuck on "still being set up"."""
     path = "/tmp/itad-wifi.state"
@@ -208,7 +211,7 @@ def wifi_fix_state():
         return ""
     if st != "working":
         return st
-    if age > 180:
+    if age > 300:
         return "done"
     rc, o, e = run(["pgrep", "-f", "wifi_fix.sh"], 5)
     if rc == 1:               # pgrep ran and found no wifi_fix.sh
@@ -255,7 +258,7 @@ def wifi_problem():
                 "card cannot look for other networks. Stop the station Wi-Fi "
                 "to see them.")
     if wifi_fix_state() == "working":
-        return ("The Wi-Fi is still being set up (up to 1 minute after "
+        return ("The Wi-Fi is still being set up (up to 4 minutes after "
                 "start-up). Wait a moment and press Scan again.")
     rc, o, e = run(["nmcli", "-t", "-f", "RUNNING", "general"], 10)
     if rc != 0 or "running" not in o:
@@ -307,7 +310,7 @@ def wifi_problem():
         wlog = ""
     if "no networks with any setting" in wlog:
         return ("The Wi-Fi card (Realtek RTL8723BE) found no networks with "
-                "either antenna setting. Check the laptop's Wi-Fi key, move "
+                "any antenna setting. Check the laptop's Wi-Fi key, move "
                 "closer to the router, or use a network cable.\nCard: %s"
                 % (wifi_card() or "RTL8723BE"))
     card = wifi_card()

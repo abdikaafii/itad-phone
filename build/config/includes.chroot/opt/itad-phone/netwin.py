@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 netwin.py - ITAD network window (Wi-Fi list + password), shared by
-LaptopSeal, PhoneSeal and SwitchSeal (v1.1.0).
+LaptopSeal, PhoneSeal and SwitchSeal (v1.1.1).
+v1.1.1: scan message no longer promises "20 seconds" (it can take longer).
 v1.1.0: ONE window for all tools. PhoneSeal opens it with hotspot=True,
         which adds the "station Wi-Fi" part (start / stop).
 v1.0.1: when no Wi-Fi is found the window says the real reason.
@@ -273,7 +274,7 @@ class NetworkWindow:
         self.w.run(net.summary, done)
 
     def scan(self):
-        self.say("Looking for Wi-Fi networks (up to 20 seconds)...")
+        self.say("Looking for Wi-Fi networks (this can take up to 1 minute)...")
         self.lb.delete(0, "end")
         self.lb.insert("end", "  searching...")
 

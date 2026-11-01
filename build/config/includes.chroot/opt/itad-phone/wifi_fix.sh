@@ -1,11 +1,18 @@
 #!/bin/bash
-# wifi_fix.sh - makes the Wi-Fi card find networks (v1.1.0)
+# wifi_fix.sh - makes the Wi-Fi card find networks (v1.2.0)
+#
+# v1.2.0: time limit raised from 2 to 4 minutes (the antenna tests could
+#   not finish in 2). Waits up to 20 s for the Wi-Fi card to appear
+#   before giving up (at boot it can appear late). Scans are quicker.
+#   For the RTL8723BE it now also tries ant_sel=0 with power saving off.
+#   If it is stopped in the middle of an antenna test, it puts the
+#   driver back to the normal setting.
 #
 # Shared by LaptopSeal and PhoneSeal. Run as root by launch.sh at every
 # boot, in the background (it never delays the window).
 #
 # v1.1.0: it can never hang any more. Every command has a time limit and
-#   the whole script stops after 2 minutes at most, so the window can no
+#   the whole script stops after 4 minutes at most (v1.2.0), so the window can no
 #   longer stay on "The Wi-Fi is still being set up". Only one copy runs
 #   at a time. It now writes the Wi-Fi card name and driver into the log
 #   (/tmp/itad-wifi.card) so the window can show them. Wi-Fi power saving
@@ -22,7 +29,7 @@
 # What it does:
 #   1. Switches Wi-Fi on (rfkill + NetworkManager).
 #   2. If the card is an RTL8723BE and it finds no networks, it tries
-#      ant_sel=2, then ant_sel=1 (with power saving off), and keeps the
+#      ant_sel=0, ant_sel=2, then ant_sel=1 (with power saving off), and keeps the
 #      first one that finds networks. If none finds anything (no Wi-Fi
 #      nearby) it goes back to the normal setting.
 #   3. Never touches a Wi-Fi that is already connected or is running the
@@ -46,19 +53,25 @@ if ! flock -n 9; then
     exit 0
 fi
 
-log "wifi_fix.sh v1.1.0 started"
+log "wifi_fix.sh v1.2.0 started"
 # The windows read this: "working" = still setting up Wi-Fi
 echo working > "$STATE"; chmod 644 "$STATE" 2>/dev/null
 finish() { echo done > "$STATE"; chmod 644 "$STATE" 2>/dev/null; }
 trap finish EXIT
-trap 'log "stopped (signal)"; exit 0' TERM INT HUP
+TRYING=""            # driver name while an antenna test is running
+trap 'log "stopped (signal)"
+      if [ -n "$TRYING" ]; then
+          timeout 15 modprobe -r "$TRYING"; timeout 15 modprobe "$TRYING"
+          log "put $TRYING back to the normal setting"
+      fi
+      exit 0' TERM INT HUP
 
-# ---- safety net: stop after 120 seconds whatever happens ------------------
+# ---- safety net: stop after 240 seconds whatever happens ------------------
 MAIN_PID=$$
 ( exec 9>&-
-  sleep 120
+  sleep 240
   if kill -0 "$MAIN_PID" 2>/dev/null; then
-      echo "$(date '+%F %T') time limit (2 min) reached - stopping" >> "$LOG"
+      echo "$(date '+%F %T') time limit (4 min) reached - stopping" >> "$LOG"
       echo done > "$STATE"
       kill -TERM "$MAIN_PID" 2>/dev/null
   fi ) &
@@ -113,9 +126,9 @@ count_nets() {        # number of Wi-Fi networks seen
     powersave_off "$dev"
     local best=0 n
     for try in 1 2 3; do
-        T 15 nmcli device wifi rescan ifname "$dev" >/dev/null 2>&1
-        sleep 5
-        n="$(T 15 nmcli -t -f SSID device wifi list ifname "$dev" \
+        T 10 nmcli device wifi rescan ifname "$dev" >/dev/null 2>&1
+        sleep 3
+        n="$(T 10 nmcli -t -f SSID device wifi list ifname "$dev" \
              --rescan no 2>/dev/null | grep -c .)"
         [ "${n:-0}" -gt "$best" ] && best="$n"
         [ "$best" -gt 0 ] && break
@@ -138,6 +151,11 @@ load_with() {         # $1 = driver, $2 = options (may be empty)
     T 10 nmcli radio wifi on 2>/dev/null
 }
 
+# At boot the card can appear a few seconds after NetworkManager: wait 20 s
+for i in $(seq 1 20); do
+    [ -n "$(wifi_dev)" ] && break
+    sleep 1
+done
 if [ -z "$(wifi_dev)" ]; then
     log "no Wi-Fi card found by NetworkManager (or no driver for it)"
     T 10 nmcli device >> "$LOG" 2>&1
@@ -159,7 +177,9 @@ if uses_driver "$DRV"; then
     if [ "$n" -gt 0 ]; then
         exit 0
     fi
-    for opts in "ant_sel=2 fwlps=0 ips=0" "ant_sel=1 fwlps=0 ips=0"; do
+    TRYING="$DRV"
+    for opts in "ant_sel=0 fwlps=0 ips=0" "ant_sel=2 fwlps=0 ips=0" \
+                "ant_sel=1 fwlps=0 ips=0"; do
         wifi_busy && { log "Wi-Fi got busy - stop"; exit 0; }
         log "$DRV: trying $opts"
         load_with "$DRV" "$opts"
@@ -169,12 +189,14 @@ if uses_driver "$DRV"; then
             mkdir -p /etc/modprobe.d
             echo "options $DRV $opts" > /etc/modprobe.d/itad-wifi.conf
             log "keeping $opts"
+            TRYING=""
             exit 0
         fi
     done
     log "$DRV: no networks with any setting (no Wi-Fi nearby?) - back to normal"
     rm -f /etc/modprobe.d/itad-wifi.conf
     load_with "$DRV" ""
+    TRYING=""
     exit 0
 fi
 
