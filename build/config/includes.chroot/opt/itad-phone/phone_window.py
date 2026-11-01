@@ -52,7 +52,7 @@ import phone_core as core
 import phone_report as rpt
 from test_server import TestServer, qr_png
 
-VERSION = "0.8.1"
+VERSION = "0.8.2"
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 BG, BG2, SIDE = "#050F22", "#081831", "#061430"
@@ -176,10 +176,19 @@ class App:
             style.theme_use("clam")
         except Exception:
             pass
-        style.configure("TCombobox", fieldbackground=CARD2, background=CARD2,
-                        foreground=TEXT, arrowcolor=TEXT)
+        # Drop-down lists: same style as LaptopSeal and SwitchSeal. The
+        # "readonly" lines matter: without them the box turns light grey
+        # in pick-only mode and the white name text cannot be seen.
+        style.configure("TCombobox", fieldbackground=CARD2, background=BORDER,
+                        foreground=TEXT, arrowcolor=TEXT, bordercolor=BORDER,
+                        lightcolor=BORDER, darkcolor=BORDER, padding=4)
+        style.map("TCombobox", fieldbackground=[("readonly", CARD2)],
+                  foreground=[("readonly", TEXT)],
+                  selectbackground=[("readonly", CARD2)],
+                  selectforeground=[("readonly", TEXT)])
         root.option_add("*TCombobox*Listbox.background", CARD2)
         root.option_add("*TCombobox*Listbox.foreground", TEXT)
+        root.option_add("*TCombobox*Listbox.selectBackground", BLUE)
         root.option_add("*TCombobox*Listbox.font", self.F(13))
         self.build_shell()
         self.show_login()
