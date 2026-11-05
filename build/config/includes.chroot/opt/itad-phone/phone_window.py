@@ -50,9 +50,13 @@ import net
 from netwin import NetworkWindow, StatusPoller
 import phone_core as core
 import phone_report as rpt
+try:
+    import sealhub_upload
+except Exception:   # SealHub is optional; the tool works without it
+    sealhub_upload = None
 from test_server import TestServer, qr_png
 
-VERSION = "0.8.2"
+VERSION = "0.9.0"
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 BG, BG2, SIDE = "#050F22", "#081831", "#061430"
@@ -559,6 +563,9 @@ class App:
         elif self.s.get("phone") is not None:
             txt = "A device job is open (its report is not saved). " \
                   "Switch off anyway?"
+        elif getattr(self, "sh_busy", False):
+            txt = "Still sending the report to SealHub. Switch off anyway? " \
+                  "(It stays on the USB and is sent next time.)"
 
         def off():
             import subprocess
@@ -1832,6 +1839,35 @@ class App:
             w.destroy()
         self.btn(self.bar_right, "Next device", self.next_phone).pack(
             side="left", padx=6)
+        self.sealhub_send(rep, saved)
+
+    def sealhub_send(self, rep, saved):
+        """Send the saved report to SealHub in the background. The report is
+        already on the USB; nothing here can stop that."""
+        if sealhub_upload is None or not saved:
+            return
+        line = self.lbl(self.r_box, "SealHub: sending...", 11, fg=MUTED,
+                        wraplength=1100)
+        line.pack(anchor="w", pady=(0, self.px(4)))
+        self.sh_busy = True
+        report_dir = os.path.dirname(saved[0])
+
+        def work():
+            return sealhub_upload.send_report(rep, saved, self.out_dir,
+                                              report_dir, "phone")
+
+        def done(res):
+            self.sh_busy = False
+            if not isinstance(res, dict):
+                res = {"state": "error", "text": "SealHub: unexpected problem"}
+            self.say(res.get("text", ""))
+            try:
+                col = {"sent": OK, "duplicate": OK, "not_set_up": MUTED,
+                       "offline": WARN}.get(res.get("state"), BAD)
+                line.configure(text=res.get("text", ""), fg=col)
+            except Exception:
+                pass   # the window was already rebuilt (Next device)
+        self.bg(work, done)
 
     def next_phone(self):
         if self.server:

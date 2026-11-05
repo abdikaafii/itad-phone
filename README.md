@@ -78,6 +78,24 @@ debugging off.
 Order is **checks, tests, wipe, report**: after the wipe the phone is back on
 the setup screen and cannot open the test page.
 
+## Sending reports to SealHub
+
+When a report is saved, PhoneSeal also sends it to the SealHub portal (the report always stays on the USB first).
+
+Setup (once): put a file called `sealhub.conf` on the ITAD_DATA stick, next to `technicians.txt`:
+
+```
+{
+  "url": "https://sealhub.onrender.com",
+  "token": "sh_paste-the-token-from-SealHub-Settings-here"
+}
+```
+
+- No network? The report stays queued on the USB (`...sealhub.json`) and goes out the next time a report is finished with a network connection. A `.sent` file next to it means it was sent.
+- Sending the same report twice never makes a duplicate on SealHub.
+- Check the connection by hand: `python3 /opt/itad-phone/sealhub_upload.py --check`
+- The token lives only on the USB, never in this repo.
+
 ## Files
 
 `build/config/includes.chroot/opt/itad-phone/`
@@ -92,6 +110,7 @@ the setup screen and cannot open the test page.
 | `phone_report.py` | Result rules and the signed PDF certificate |
 | `itad_common.py` | Logins, storage and signing (shared with LaptopSeal) |
 | `itad_storage.sh` | Finds the ITAD_DATA stick (USB B) for reports |
+| `sealhub_upload.py` | Sends saved reports to SealHub (queued when offline) |
 | `verify_report.py` | Checks that a report was not changed |
 
 Build: GitHub > Actions > *Build ITAD PhoneSeal ISO* > Run workflow.

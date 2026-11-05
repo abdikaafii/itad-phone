@@ -39,7 +39,7 @@ printf '%s\n' plymouth plymouth-themes xorg xinit openbox xterm python3 \
   util-linux x11-xserver-utils network-manager wpasupplicant wireless-regdb \
   iw rfkill openssl \
   libimobiledevice-utils usbmuxd fonts-dejavu-core zstd dosfstools \
-  exfatprogs pciutils usbutils iproute2 \
+  exfatprogs pciutils usbutils iproute2 ca-certificates \
   > "$CFG/package-lists/itad.list.chroot"
 
 # NICE-TO-HAVE packages: installed one by one by a hook (step 4).
